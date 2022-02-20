@@ -1,3 +1,6 @@
+// This file was automatically generated
+// VERSION = 1
+
 use obi::{OBIDecode, OBIEncode, OBISchema};
 use owasm::{execute_entry_point, ext, oei, prepare_entry_point};
 use std::collections::hash_map::*;
@@ -19,46 +22,54 @@ struct Output {
 
 const EXCHANGE_COUNT: u64 = 6;
 
-const CCXT_DS_ID: i64 = 3;
-
-// Add non CCXT data source to this array
-const API_SOURCE: [Exchange; 4] = [
-    Exchange::CRYPTOCOMPARE,
-    Exchange::COINGECKO,
+const API_SOURCE: [Exchange; 6] = [
+    Exchange::BINANCE,
     Exchange::COINBASEPRO,
+    Exchange::COINGECKO,
     Exchange::COINMARKETCAP,
+    Exchange::CRYPTOCOMPARE,
+    Exchange::HUOBIPRO,
 ];
 
 #[derive(ToString, EnumString, EnumIter, PartialEq, Debug, Copy, Clone)]
 enum Token {
-  DYDX,
-  IMX,
-  BORA,
-  SKL
+    DYDX,
+    IMX,
+    BORA,
+    SKL,
+    GALA,
+    WEMIX,
+    XPR,
 }
 
 // Special cases for Tokens starting with number that cannot be directly assigned to enum
 impl Token {
     fn to_token_string(self: Token) -> String {
-        self.to_string()
+        match self {
+            _ => self.to_string(),
+        }
     }
     fn from_token_string(symbol: &str) -> Result<Token, ParseError> {
-        Token::from_str(symbol)
+        match symbol {
+            _ => Token::from_str(symbol),
+        }
     }
 }
 
 #[derive(ToString, EnumString, EnumIter, EnumPropertyTrait, Debug, Copy, Clone, PartialEq)]
 enum Exchange {
-    #[strum(props(data_source_id = "1"))]
-    CRYPTOCOMPARE = 0,
-    #[strum(props(data_source_id = "2"))]
-    COINGECKO = 1,
-    #[strum(props(data_source_id = "5"))]
-    COINMARKETCAP = 2,
-    BINANCE = 3,
-    HUOBIPRO = 4,
-    #[strum(props(data_source_id = "4"))]
-    COINBASEPRO = 5,
+    #[strum(props(data_source_id = "54"))]
+    BINANCE = 0,
+    #[strum(props(data_source_id = "73"))]
+    COINBASEPRO = 1,
+    #[strum(props(data_source_id = "74"))]
+    COINGECKO = 2,
+    #[strum(props(data_source_id = "72"))]
+    COINMARKETCAP = 3,
+    #[strum(props(data_source_id = "71"))]
+    CRYPTOCOMPARE = 4,
+    #[strum(props(data_source_id = "59"))]
+    HUOBIPRO = 5,
 }
 
 impl Exchange {
@@ -70,10 +81,13 @@ impl Exchange {
 macro_rules! token_to_exchange_list {
     ($data:expr) => {
         match $data {
-            Token::DYDX => "111110",
-            Token::IMX => "111110",
-            Token::BORA => "111000",
-            Token::SKL => "111101",
+            Token::DYDX => "101111",
+            Token::IMX => "101111",
+            Token::BORA => "001110",
+            Token::SKL => "111110",
+            Token::GALA => "001110",
+            Token::WEMIX => "001110",
+            Token::XPR => "001110",
         }
     };
 }
@@ -110,7 +124,7 @@ fn get_ds_from_exchange(exchange_id: u64) -> i64 {
     if API_SOURCE.contains(&exchange) {
         i64::from_str(exchange.get_str("data_source_id").unwrap()).unwrap()
     } else {
-        CCXT_DS_ID // CCXT Data source id
+        3i64 // CCXT Data source id
     }
 }
 
@@ -233,9 +247,7 @@ fn execute_impl(input: Input) -> Output {
 
     let mut rates = Vec::new();
     for symbol in input.symbols.iter() {
-        rates.push(
-            (median(symbol_pxs.get_mut(*&symbol).unwrap()) * (input.multiplier as f64)) as u64,
-        )
+        rates.push((median(symbol_pxs.get_mut(*&symbol).unwrap()) * (input.multiplier as f64)) as u64)
     }
     Output { rates }
 }
