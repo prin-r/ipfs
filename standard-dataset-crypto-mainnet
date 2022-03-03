@@ -1,0 +1,710 @@
+use obi::{OBIDecode, OBIEncode, OBISchema};
+use owasm::{execute_entry_point, ext, oei, prepare_entry_point};
+use std::collections::hash_map::*;
+use std::collections::HashMap;
+use std::str::FromStr;
+use strum::{EnumProperty, IntoEnumIterator, ParseError};
+use strum_macros::{EnumIter, EnumProperty as EnumPropertyTrait, EnumString, ToString};
+
+#[derive(OBIDecode, OBISchema)]
+struct Input {
+  symbols: Vec<String>,
+  multiplier: u64,
+}
+
+#[derive(OBIEncode, OBISchema)]
+struct Output {
+  rates: Vec<u64>,
+}
+
+const EXCHANGE_COUNT: u64 = 18;
+
+// Add non CCXT data source to this array
+const API_SOURCE: [Exchange; 5] = [
+  Exchange::CRYPTOCOMPARE,
+  Exchange::COINGECKO,
+  Exchange::COINBASEPRO,
+  Exchange::COINMARKETCAP,
+  Exchange::BRAVENEWCOIN,
+];
+
+#[derive(ToString, EnumString, EnumIter, PartialEq, Debug, Copy, Clone)]
+enum Token {
+  BTC,
+  ETH,
+  USDT,
+  XRP,
+  LINK,
+  DOT,
+  BCH,
+  LTC,
+  ADA,
+  BSV,
+  CRO,
+  BNB,
+  EOS,
+  XTZ,
+  TRX,
+  XLM,
+  ATOM,
+  XMR,
+  OKB,
+  USDC,
+  NEO,
+  XEM,
+  LEO,
+  HT,
+  VET,
+  YFI,
+  MIOTA,
+  LEND,
+  SNX,
+  DASH,
+  COMP,
+  ZEC,
+  ETC,
+  OMG,
+  MKR,
+  ONT,
+  NXM,
+  AMPL,
+  BAT,
+  THETA,
+  DAI,
+  REN,
+  ZRX,
+  ALGO,
+  FTT,
+  DOGE,
+  KSM,
+  WAVES,
+  EWT,
+  DGB,
+  KNC,
+  ICX,
+  TUSD,
+  SUSHI,
+  BTT,
+  BAND,
+  EGLD,
+  ANT,
+  NMR,
+  USDP,
+  LSK,
+  LRC,
+  HBAR,
+  BAL,
+  RUNE,
+  YFII,
+  LUNA,
+  DCR,
+  SC,
+  STX,
+  ENJ,
+  BUSD,
+  OCEAN,
+  RSR,
+  SXP,
+  BTG,
+  BZRX,
+  SRM,
+  SNT,
+  SOL,
+  CKB,
+  BNT,
+  CRV,
+  MANA,
+  KAVA,
+  MATIC,
+  TRB,
+  REP,
+  FTM,
+  TOMO,
+  ONE,
+  WNXM,
+  PAXG,
+  WAN,
+  SUSD,
+  RLC,
+  OXT,
+  RVN,
+  FNX,
+  RENBTC,
+  WBTC,
+  DIA,
+  BTM,
+  IOTX,
+  FET,
+  JST,
+  MCO,
+  KMD,
+  BTS,
+  QKC,
+  YAMV2,
+  XZC,
+  UOS,
+  AKRO,
+  HNT,
+  HOT,
+  KAI,
+  OGN,
+  WRX,
+  KDA,
+  ORN,
+  FOR,
+  AST,
+  STORJ,
+  ABYSS,
+  BLZ,
+  BTU,
+  CND,
+  CVC,
+  DGX,
+  ELF,
+  EQUAD,
+  EURS,
+  FXC,
+  GDC,
+  GEN,
+  GHT,
+  GNO,
+  GVT,
+  IOST,
+  KEY,
+  LOOM,
+  MET,
+  MFG,
+  MLN,
+  MTL,
+  MYB,
+  NEXXO,
+  NPXS,
+  OST,
+  PAY,
+  PBTC,
+  PLR,
+  PLTC,
+  PNK,
+  PNT,
+  POLY,
+  POWR,
+  QNT,
+  RAE,
+  REQ,
+  RSV,
+  SAN,
+  SPIKE,
+  SPN,
+  STMX,
+  TKN,
+  TKX,
+  TRYB,
+  UBT,
+  UPP,
+  USDS,
+  VIDT,
+  XHV,
+  CREAM,
+  UNI,
+  LINA,
+  XVS,
+  UMA,
+  CELO,
+  QTUM,
+  HYN,
+  ZIL,
+  ZB,
+  FIL,
+  ALPHA,
+  TWT,
+  PERP,
+  DPI,
+  MTA,
+  AAVE,
+  GRT,
+  KP3R,
+  YAM,
+  PICKLE,
+  SFI,
+  BOR,
+  OBTC,
+  CAKE,
+  HEGIC,
+  FRAX,
+  SCRT,
+  MVL,
+  STRK,
+  MIR,
+  ANC,
+  INDEX,
+  ARPA,
+  AUTO,
+  UST,
+  ALCX,
+  OHM,
+  MIM,
+  MOVR,
+  AVAX,
+  INJ,
+  JOE,
+  ORCA,
+  BEL,
+  ORC,
+  SHIB,
+  AXS,
+  ROSE,
+  C98,
+  CUSD,
+  NEAR,
+  SAND,
+  BOBA,
+  BETA,
+  SPELL,
+}
+
+// Special cases for Tokens starting with number that cannot be directly assigned to enum
+impl Token {
+  fn to_token_string(self: Token) -> String {
+    match self {
+      _ => self.to_string(),
+    }
+  }
+  fn from_token_string(symbol: &str) -> Result<Token, ParseError> {
+    match symbol {
+      _ => Token::from_str(symbol),
+    }
+  }
+}
+
+#[derive(ToString, EnumString, EnumIter, EnumPropertyTrait, Debug, Copy, Clone, PartialEq)]
+enum Exchange {
+  #[strum(props(data_source_id = "11"))]
+  BRAVENEWCOIN = 0,
+  #[strum(props(data_source_id = "1"))]
+  CRYPTOCOMPARE = 1,
+  #[strum(props(data_source_id = "2"))]
+  COINGECKO = 2,
+  #[strum(props(data_source_id = "5"))]
+  COINMARKETCAP = 3,
+  BINANCE = 4,
+  HUOBIPRO = 5,
+  #[strum(props(data_source_id = "4"))]
+  COINBASEPRO = 6,
+  KRAKEN = 7,
+  BITFINEX = 8,
+  BITTREX = 9,
+  BITSTAMP = 10,
+  OKEX = 11,
+  FTX = 12,
+  HITBTC = 13,
+  ITBIT = 14,
+  BITHUMB = 15,
+  COINONE = 16,
+  BIBOX = 17,
+}
+
+impl Exchange {
+  fn from_u64(value: u64) -> Option<Exchange> {
+    Exchange::iter().nth(value as usize)
+  }
+}
+
+macro_rules! token_to_exchange_list {
+  ($data:expr) => {
+    match $data {
+      Token::BTC => "011111111100000000",
+      Token::ETH => "011111111100000000",
+      Token::USDT => "011100111000100000",
+      Token::XRP => "011111001000000000",
+      Token::LINK => "011111110100000000",
+      Token::DOT => "011111000000000000",
+      Token::BCH => "011111000000000000",
+      Token::LTC => "011111001000000000",
+      Token::ADA => "011111010000000000",
+      Token::BSV => "011101001001000000",
+      Token::CRO => "011101000000000000",
+      Token::BNB => "011110000000000000",
+      Token::EOS => "011111001000000000",
+      Token::XTZ => "011111001100000000",
+      Token::TRX => "011111000000000000",
+      Token::XLM => "011111110000000000",
+      Token::ATOM => "011111100000000000",
+      Token::XMR => "011111000000000000",
+      Token::OKB => "011100000000000000",
+      Token::USDC => "011110010001000000",
+      Token::NEO => "011100000000000000",
+      Token::XEM => "011101000000000000",
+      Token::LEO => "011100000000000000",
+      Token::HT => "011101000000000000",
+      Token::VET => "011111000000000000",
+      Token::YFI => "011111000000000000",
+      Token::MIOTA => "011100000000000000",
+      Token::LEND => "011000000000000000",
+      Token::SNX => "011111000000000000",
+      Token::DASH => "011111000000000000",
+      Token::COMP => "011110110100000000",
+      Token::ZEC => "011111000000000000",
+      Token::ETC => "001111000000000000",
+      Token::OMG => "011111000000000000",
+      Token::MKR => "011111000000000000",
+      Token::ONT => "011111000000000000",
+      Token::NXM => "001100000000000000",
+      Token::AMPL => "011100000000000000",
+      Token::BAT => "011111010100000000",
+      Token::THETA => "011111000000000000",
+      Token::DAI => "011100111000000000",
+      Token::REN => "011111000000000000",
+      Token::ZRX => "011111000000000000",
+      Token::ALGO => "011111000000000000",
+      Token::FTT => "011111000000000000",
+      Token::DOGE => "011111000000000000",
+      Token::KSM => "011101000000000000",
+      Token::WAVES => "011111000000000000",
+      Token::EWT => "011100000000000000",
+      Token::DGB => "011110000000000000",
+      Token::KNC => "000011000000000000",
+      Token::ICX => "011111000000000000",
+      Token::TUSD => "011110000000000000",
+      Token::SUSHI => "011111000000000000",
+      Token::BTT => "011111000000000000",
+      Token::BAND => "011111000000000000",
+      Token::EGLD => "011110000000000000",
+      Token::ANT => "011111000000000000",
+      Token::NMR => "011110000000000000",
+      Token::USDP => "011110000000000000",
+      Token::LSK => "011110000000000000",
+      Token::LRC => "011110000000000000",
+      Token::HBAR => "011110000000000000",
+      Token::BAL => "011111000000000000",
+      Token::RUNE => "011100000000000000",
+      Token::YFII => "011111000000000000",
+      Token::LUNA => "011111000000000000",
+      Token::DCR => "011111000000000000",
+      Token::SC => "011110000000000000",
+      Token::STX => "001110000000000000",
+      Token::ENJ => "011110000000000000",
+      Token::BUSD => "011110000000000000",
+      Token::OCEAN => "011110000000000000",
+      Token::RSR => "011111000000000000",
+      Token::SXP => "011110000000000000",
+      Token::BTG => "011100000000000000",
+      Token::BZRX => "011110000000000000",
+      Token::SRM => "011110000000000000",
+      Token::SNT => "010101000000000000",
+      Token::SOL => "001110000000000000",
+      Token::CKB => "011101000000000000",
+      Token::BNT => "011111000000000000",
+      Token::CRV => "011111000000000000",
+      Token::MANA => "011111000000000000",
+      Token::KAVA => "011110000000000000",
+      Token::MATIC => "011110000000000000",
+      Token::TRB => "011111000000000000",
+      Token::REP => "011110000000000000",
+      Token::FTM => "011110000000000000",
+      Token::TOMO => "011110000000000000",
+      Token::ONE => "011111000000000000",
+      Token::WNXM => "011011000000000000",
+      Token::PAXG => "011110000000000000",
+      Token::WAN => "011110000000000000",
+      Token::SUSD => "011110000000000000",
+      Token::RLC => "011110000000000000",
+      Token::OXT => "001000000000000000",
+      Token::RVN => "011110000000000000",
+      Token::FNX => "001000000000000000",
+      Token::RENBTC => "001100000000000000",
+      Token::WBTC => "011100000000000000",
+      Token::DIA => "011100000000000000",
+      Token::BTM => "011100000000000000",
+      Token::IOTX => "011100000000000000",
+      Token::FET => "011100000000000000",
+      Token::JST => "011100000000000000",
+      Token::MCO => "010100000000000000",
+      Token::KMD => "011100000000000000",
+      Token::BTS => "011100000000000000",
+      Token::QKC => "011100000000000000",
+      Token::YAMV2 => "011100000000000000",
+      Token::XZC => "010000000000000000",
+      Token::UOS => "001100000000000000",
+      Token::AKRO => "011100000000000000",
+      Token::HNT => "001100000000000000",
+      Token::HOT => "001100000000000000",
+      Token::KAI => "011100000000000000",
+      Token::OGN => "011110000000000000",
+      Token::WRX => "011110000000000000",
+      Token::KDA => "011100000000000000",
+      Token::ORN => "001100000000000000",
+      Token::FOR => "011110000000000000",
+      Token::AST => "011100000000000000",
+      Token::STORJ => "011110000001000000",
+      Token::ABYSS => "011100000000000000",
+      Token::BLZ => "011111000000000000",
+      Token::BTU => "011100000000000000",
+      Token::CND => "011100000000000000",
+      Token::CVC => "011111000000000000",
+      Token::DGX => "011100000000000000",
+      Token::ELF => "011101000000000000",
+      Token::EQUAD => "011100000000000000",
+      Token::EURS => "011100000000000000",
+      Token::FXC => "000000000000000000",
+      Token::GDC => "001100000000000000",
+      Token::GEN => "001100000000000000",
+      Token::GHT => "001000000000000000",
+      Token::GNO => "011100000000000000",
+      Token::GVT => "011100000000000000",
+      Token::IOST => "011111000000000000",
+      Token::KEY => "011110000000000000",
+      Token::LOOM => "011101000000000000",
+      Token::MET => "011100000000000000",
+      Token::MFG => "011100000000000000",
+      Token::MLN => "011101000000000000",
+      Token::MTL => "011110000000000000",
+      Token::MYB => "011100000000000000",
+      Token::NEXXO => "001000000000000000",
+      Token::NPXS => "011100000000000000",
+      Token::OST => "011100000000000000",
+      Token::PAY => "011100000000000000",
+      Token::PBTC => "001100000000000000",
+      Token::PLR => "011100000000000000",
+      Token::PLTC => "010000000000000000",
+      Token::PNK => "011100000000000000",
+      Token::PNT => "011110000000000000",
+      Token::POLY => "011100000000000000",
+      Token::POWR => "011110100000000100",
+      Token::QNT => "011110100000000000",
+      Token::RAE => "001100000000000000",
+      Token::REQ => "011110100000000000",
+      Token::RSV => "011100000000000000",
+      Token::SAN => "011100000000000000",
+      Token::SPIKE => "001100000000000000",
+      Token::SPN => "011000000000000000",
+      Token::STMX => "011110000000000000",
+      Token::TKN => "011100000000000000",
+      Token::TKX => "001000000000000000",
+      Token::TRYB => "011000000000000000",
+      Token::UBT => "011100000000000000",
+      Token::UPP => "011100000000000000",
+      Token::USDS => "011000000000000000",
+      Token::VIDT => "011100000000000000",
+      Token::XHV => "001000000000000000",
+      Token::CREAM => "011100000000100000",
+      Token::UNI => "011110000000000000",
+      Token::LINA => "011110000000010000",
+      Token::XVS => "011110000000000000",
+      Token::UMA => "011110000000000000",
+      Token::CELO => "011110000000000000",
+      Token::QTUM => "011110000000000000",
+      Token::HYN => "011000000000000000",
+      Token::ZIL => "011110000000000000",
+      Token::ZB => "011000000000000000",
+      Token::FIL => "011111100001010000",
+      Token::ALPHA => "011110000001000000",
+      Token::TWT => "011110000000000000",
+      Token::PERP => "011100000000000000",
+      Token::DPI => "011100000000000000",
+      Token::MTA => "011100000000000000",
+      Token::AAVE => "011110000000000000",
+      Token::GRT => "011110000000000000",
+      Token::KP3R => "011110000001000000",
+      Token::YAM => "011100000000000000",
+      Token::PICKLE => "011100000000000000",
+      Token::SFI => "011100000000000000",
+      Token::BOR => "011100000000000000",
+      Token::OBTC => "001000000000000000",
+      Token::CAKE => "011100000000000000",
+      Token::HEGIC => "011100000000000000",
+      Token::FRAX => "011100000000000000",
+      Token::SCRT => "011100000000000000",
+      Token::MVL => "011100000000000000",
+      Token::STRK => "011100000000000000",
+      Token::MIR => "001110000000000000",
+      Token::ANC => "011100000000000000",
+      Token::INDEX => "001100000000000000",
+      Token::ARPA => "011110000000000000",
+      Token::AUTO => "001110000000000000",
+      Token::UST => "011100100001000000",
+      Token::ALCX => "011100000000100001",
+      Token::OHM => "001100000000000000",
+      Token::MIM => "011100000000000000",
+      Token::MOVR => "011100010000000000",
+      Token::AVAX => "011111100001000000",
+      Token::INJ => "011111010000000000",
+      Token::JOE => "011100000000000000",
+      Token::ORCA => "001100000000000000",
+      Token::BEL => "011110000000000000",
+      Token::ORC => "001100000000000000",
+      Token::SHIB => "011111100001000000",
+      Token::AXS => "011111000000000000",
+      Token::ROSE => "011110000000000000",
+      Token::C98 => "011110000000000000",
+      Token::CUSD => "011100000000000000",
+      Token::NEAR => "011111000001010000",
+      Token::SAND => "011110000001000000",
+      Token::BOBA => "011100001000100000",
+      Token::BETA => "011110000000000000",
+      Token::SPELL => "011110100000100000"
+    }
+  };
+}
+
+fn get_ds_input(exchange_id: u64, symbols: Vec<Token>) -> String {
+  let exchange = Exchange::from_u64(exchange_id).unwrap();
+  if API_SOURCE.contains(&exchange) {
+    format!(
+      "{}",
+      symbols
+        .iter()
+        .map(|&x| x.to_token_string())
+        .collect::<Vec<_>>()
+        .join(" ")
+    )
+  } else {
+    format!(
+      "{} {}",
+      exchange.to_string().to_ascii_lowercase(),
+      symbols
+        .iter()
+        .map(|&x| x.to_token_string())
+        .collect::<Vec<_>>()
+        .join(" ")
+    )
+  }
+}
+
+fn get_ds_from_exchange(exchange_id: u64) -> i64 {
+  let exchange = match Exchange::from_u64(exchange_id) {
+    Some(data) => data,
+    None => panic!("Unsupported Exchange ID"),
+  };
+  if API_SOURCE.contains(&exchange) {
+    i64::from_str(exchange.get_str("data_source_id").unwrap()).unwrap()
+  } else {
+    3i64 // CCXT Data source id
+  }
+}
+
+fn get_symbols_from_input(exchange_id: u64, input: String) -> Vec<String> {
+  let exchange = Exchange::from_u64(exchange_id).unwrap();
+  if API_SOURCE.contains(&exchange) {
+    input.split(" ").map(|x| x.to_string()).collect()
+  } else {
+    let mut v: Vec<String> = input.split(" ").map(|x| x.to_string()).collect();
+    v.drain(0..1);
+    v
+  }
+}
+
+// Get list of exchange that needs to be called along with the symbols to call
+// given a list of input symbols
+fn get_exchange_map(symbols: Vec<String>) -> HashMap<u64, Vec<Token>> {
+  let mut exchange_map = HashMap::new();
+  for symbol in symbols {
+    let symbol_token = Token::from_token_string(symbol.as_str()).unwrap();
+    let mut exchange_binary = token_to_exchange_list!(symbol_token).chars();
+    for i in 0..(EXCHANGE_COUNT as usize) {
+      if exchange_binary.next() == Some('1') {
+        match exchange_map.entry(i as u64) {
+          Entry::Vacant(e) => {
+            e.insert(vec![symbol_token]);
+          }
+          Entry::Occupied(mut e) => {
+            e.get_mut().push(symbol_token);
+          }
+        }
+      }
+    }
+  }
+  exchange_map
+}
+
+fn median(arr: &mut Vec<f64>) -> f64 {
+  let len_arr = arr.len() as f64;
+  if len_arr > 0f64 {
+    arr.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let mid = len_arr / 2f64;
+    if len_arr as u64 % 2 == 0 {
+      (arr[(mid - 1f64) as usize] + arr[mid as usize]) / 2f64
+    } else {
+      arr[mid as usize]
+    }
+  } else {
+    0f64
+  }
+}
+
+fn prepare_impl(input: Input) {
+  let exchange_map = get_exchange_map(input.symbols);
+  for (exchange_id, symbols) in exchange_map.iter() {
+    oei::ask_external_data(
+      *exchange_id as i64,
+      get_ds_from_exchange(*exchange_id),
+      get_ds_input(*exchange_id, symbols.to_vec()).as_bytes(),
+    )
+  }
+}
+
+#[no_mangle]
+fn execute_impl(input: Input) -> Output {
+  // Get the required exchange and associated symbols to query
+  let exchange_map = get_exchange_map((*input.symbols).to_vec());
+  // store the median price of each token requested from an exchange
+  let mut exchange_medians: Vec<Option<Vec<f64>>> = vec![Some(vec![]); EXCHANGE_COUNT as usize];
+  for (exchange_id, _symbols) in exchange_map.iter() {
+    // Get the data source calldata for a given external ID
+    let raw_input = ext::load_input::<String>(*exchange_id as i64);
+    let mut prices = vec![vec![]; exchange_map[exchange_id].len()];
+    let inputs: Vec<String> = raw_input.collect();
+    if inputs.len() == 0 {
+      exchange_medians[*exchange_id as usize] = None;
+      continue;
+    }
+    // for each validator response for the exchange,
+    // split the response into individual prices
+    for raw in inputs {
+      let px_list: Vec<f64> = raw
+        .split(",")
+        .filter_map(|x| x.parse::<f64>().ok())
+        .collect();
+      // for each token price, add it to the list of validator responses
+      // for that token and exchange
+      for (idx, &px) in px_list.iter().enumerate() {
+        prices[idx].push(px);
+      }
+    }
+    let mut median_prices = vec![0f64; prices.len()];
+    for (idx, price) in prices.iter().enumerate() {
+      median_prices[idx] = median(&mut price.to_vec());
+    }
+    exchange_medians[*exchange_id as usize] = Some(median_prices);
+  }
+
+  let mut symbol_pxs = HashMap::new();
+  for (exchange_id, symbols) in exchange_map.iter() {
+    let exchange_median = exchange_medians[*exchange_id as usize].as_ref();
+    if exchange_median.is_none() {
+      continue;
+    }
+    let exchange_median = exchange_median.unwrap();
+    let symbols_vec =
+      get_symbols_from_input(*exchange_id, get_ds_input(*exchange_id, symbols.to_vec()));
+
+    for (symbol_id, symbol) in symbols_vec.iter().enumerate() {
+      match symbol_pxs.entry(symbol.clone()) {
+        Entry::Vacant(e) => {
+          e.insert(vec![exchange_median[symbol_id]]);
+        }
+        Entry::Occupied(mut e) => {
+          e.get_mut().push(exchange_median[symbol_id]);
+        }
+      }
+    }
+  }
+
+  let mut rates = Vec::new();
+  for symbol in input.symbols.iter() {
+    rates.push((median(symbol_pxs.get_mut(*&symbol).unwrap()) * (input.multiplier as f64)) as u64)
+  }
+  Output { rates }
+}
+
+prepare_entry_point!(prepare_impl);
+execute_entry_point!(execute_impl);
