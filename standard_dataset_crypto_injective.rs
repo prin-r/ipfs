@@ -178,7 +178,7 @@ macro_rules! token_to_exchange_list {
             Token::IOTX => "0111000000000000000",
             Token::LTC => "0111110010000000000",
             Token::MATIC => "0111100000000000000",
-            Token::OHM => "0111000000000000000",
+            Token::OHM => "0011000000000000000",
             Token::PERP => "0111000000000000000",
             Token::THETA => "0111110000000000000",
             Token::XTZ => "0111110011000000000",
@@ -190,7 +190,7 @@ macro_rules! token_to_exchange_list {
             Token::KDA => "0111000000000000000",
             Token::ONE => "0111110000000000000",
             Token::TOMO => "0111100000000000000",
-            Token::FIL => "0111111000010010000",
+            Token::FIL => "0111111000010000000",
         }
     };
 }
