@@ -40,6 +40,8 @@ enum Token {
     GALA,
     WEMIX,
     XPR,
+    NEAR,
+    KLAY,
 }
 
 // Special cases for Tokens starting with number that cannot be directly assigned to enum
@@ -88,6 +90,8 @@ macro_rules! token_to_exchange_list {
             Token::GALA => "001110",
             Token::WEMIX => "001110",
             Token::XPR => "001110",
+            Token::NEAR => "101110",
+            Token::KLAY => "101100",
         }
     };
 }
