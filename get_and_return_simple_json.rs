@@ -14,7 +14,7 @@ struct Output {
 }
 
 fn prepare_impl(input: Input) {
-    oei::ask_external_data(DS, 1, format!("{}", input.sliced_index_input).as_bytes())
+    oei::ask_external_data(1, DS, format!("{}", input.sliced_index_input).as_bytes())
 }
 
 #[no_mangle]
