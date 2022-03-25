@@ -183,7 +183,7 @@ macro_rules! token_to_exchange_list {
             Token::BNB => "0100001110000",
             Token::BORA => "0000001110000",
             Token::BTC => "0111111111110",
-            Token::BTT => "0100001110100",
+            Token::BTT => "0000001110100",
             Token::CAKE => "0000001110000",
             Token::CELO => "0100001110000",
             Token::COMP => "0101011110010",
