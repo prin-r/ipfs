@@ -35,7 +35,7 @@ const API_SOURCE: [Exchange; 13] = [
     Exchange::HITBTC,
     Exchange::HUOBIPRO,
     Exchange::KRAKEN,
-    Exchange::OKEX,
+    Exchange::OKX,
 ];
 
 #[derive(ToString, EnumString, EnumIter, PartialEq, Debug, Copy, Clone)]
@@ -116,6 +116,9 @@ enum Token {
     YFI,
     ZIL,
     ZRX,
+    ILV,
+    YGG,
+    AUDIO,
 }
 
 // Special cases for Tokens starting with number that cannot be directly assigned to enum
@@ -159,7 +162,7 @@ enum Exchange {
     #[strum(props(data_source_id = "228"))]
     KRAKEN = 11,
     #[strum(props(data_source_id = "229"))]
-    OKEX = 12,
+    OKX = 12,
 }
 
 impl Exchange {
@@ -247,6 +250,9 @@ macro_rules! token_to_exchange_list {
             Token::YFI => "0100001110100",
             Token::ZIL => "0100001110000",
             Token::ZRX => "0100001110100",
+            Token::ILV => "0100001110000",
+            Token::YGG => "0100001110000",
+            Token::AUDIO => "0100001110000",
         }
     };
 }
