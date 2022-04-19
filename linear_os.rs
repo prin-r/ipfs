@@ -63,6 +63,7 @@ enum Token {
     DOT,
     DYDX,
     EGLD,
+    ENJ,
     EOS,
     ETH,
     FIL,
@@ -137,31 +138,31 @@ impl Token {
 
 #[derive(ToString, EnumString, EnumIter, EnumPropertyTrait, Debug, Copy, Clone, PartialEq)]
 enum Exchange {
-    #[strum(props(data_source_id = "55"))]
+    #[strum(props(data_source_id = "231"))]
     BIBOX = 0,
-    #[strum(props(data_source_id = "54"))]
+    #[strum(props(data_source_id = "230"))]
     BINANCE = 1,
-    #[strum(props(data_source_id = "53"))]
+    #[strum(props(data_source_id = "226"))]
     BITFINEX = 2,
-    #[strum(props(data_source_id = "57"))]
+    #[strum(props(data_source_id = "227"))]
     BITTREX = 3,
-    #[strum(props(data_source_id = "78"))]
+    #[strum(props(data_source_id = "234"))]
     BRAVENEWCOIN = 4,
-    #[strum(props(data_source_id = "73"))]
+    #[strum(props(data_source_id = "235"))]
     COINBASEPRO = 5,
-    #[strum(props(data_source_id = "74"))]
+    #[strum(props(data_source_id = "251"))]
     COINGECKO = 6,
-    #[strum(props(data_source_id = "72"))]
+    #[strum(props(data_source_id = "236"))]
     COINMARKETCAP = 7,
-    #[strum(props(data_source_id = "71"))]
+    #[strum(props(data_source_id = "232"))]
     CRYPTOCOMPARE = 8,
-    #[strum(props(data_source_id = "76"))]
+    #[strum(props(data_source_id = "252"))]
     HITBTC = 9,
-    #[strum(props(data_source_id = "59"))]
+    #[strum(props(data_source_id = "224"))]
     HUOBIPRO = 10,
-    #[strum(props(data_source_id = "58"))]
+    #[strum(props(data_source_id = "228"))]
     KRAKEN = 11,
-    #[strum(props(data_source_id = "56"))]
+    #[strum(props(data_source_id = "229"))]
     OKX = 12,
 }
 
@@ -197,6 +198,7 @@ macro_rules! token_to_exchange_list {
             Token::DOT => "0100001110100",
             Token::DYDX => "0100001110100",
             Token::EGLD => "0100001110000",
+            Token::ENJ => "0100001110000",
             Token::EOS => "0110001110100",
             Token::ETH => "0111111111110",
             Token::FIL => "1100011101100",
