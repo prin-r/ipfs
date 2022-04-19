@@ -138,31 +138,31 @@ impl Token {
 
 #[derive(ToString, EnumString, EnumIter, EnumPropertyTrait, Debug, Copy, Clone, PartialEq)]
 enum Exchange {
-    #[strum(props(data_source_id = "231"))]
+    #[strum(props(data_source_id = "55"))]
     BIBOX = 0,
-    #[strum(props(data_source_id = "230"))]
+    #[strum(props(data_source_id = "54"))]
     BINANCE = 1,
-    #[strum(props(data_source_id = "226"))]
+    #[strum(props(data_source_id = "53"))]
     BITFINEX = 2,
-    #[strum(props(data_source_id = "227"))]
+    #[strum(props(data_source_id = "57"))]
     BITTREX = 3,
-    #[strum(props(data_source_id = "234"))]
+    #[strum(props(data_source_id = "78"))]
     BRAVENEWCOIN = 4,
-    #[strum(props(data_source_id = "235"))]
+    #[strum(props(data_source_id = "73"))]
     COINBASEPRO = 5,
-    #[strum(props(data_source_id = "251"))]
+    #[strum(props(data_source_id = "74"))]
     COINGECKO = 6,
-    #[strum(props(data_source_id = "236"))]
+    #[strum(props(data_source_id = "72"))]
     COINMARKETCAP = 7,
-    #[strum(props(data_source_id = "232"))]
+    #[strum(props(data_source_id = "71"))]
     CRYPTOCOMPARE = 8,
-    #[strum(props(data_source_id = "252"))]
+    #[strum(props(data_source_id = "76"))]
     HITBTC = 9,
-    #[strum(props(data_source_id = "224"))]
+    #[strum(props(data_source_id = "59"))]
     HUOBIPRO = 10,
-    #[strum(props(data_source_id = "228"))]
+    #[strum(props(data_source_id = "58"))]
     KRAKEN = 11,
-    #[strum(props(data_source_id = "229"))]
+    #[strum(props(data_source_id = "56"))]
     OKX = 12,
 }
 
