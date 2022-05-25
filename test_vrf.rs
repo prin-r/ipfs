@@ -98,7 +98,6 @@ fn str_to_vec(input: &String) -> Vec<u8> {
 fn execute_impl(input: Input) -> Output {
     let x = ext::load_majority::<String>(1).unwrap();
 
-    /*
     assert!(x.len() == 288);
     // The first 160 characters is the proof
     let proof = decode_hex(&x[0..160]);
@@ -109,8 +108,6 @@ fn execute_impl(input: Input) -> Output {
     if !oei::ecvrf_verify(&decode_hex(&pubkey), &proof, alpha.as_bytes()) {
         panic!("Invalid result")
     }
-
-     */
 
     Output {
         hash: str_to_vec(&x),
