@@ -1,5 +1,5 @@
 use obi::{OBIDecode, OBIEncode, OBISchema};
-use owasm2::{execute_entry_point, ext, oei, prepare_entry_point};
+use owasm_kit::{execute_entry_point, ext, oei, prepare_entry_point};
 use sha3::{Digest, Sha3_256};
 
 #[derive(OBIDecode, OBISchema)]
@@ -10,7 +10,8 @@ struct Input {
 
 #[derive(OBIEncode, OBISchema)]
 struct Output {
-    hash: Vec<u8>,
+    proof: Vec<u8>,
+    result: Vec<u8>,
 }
 
 const NUM_DS: u8 = 4;
@@ -25,6 +26,13 @@ fn get_hash(x: &[u8]) -> Vec<u8> {
     let mut output = vec![0u8; 32];
     output.copy_from_slice(&hasher.finalize());
     output
+}
+
+fn decode_hex(input: &str) -> Vec<u8> {
+    (0..input.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&input[i..i + 2], 16).unwrap())
+        .collect()
 }
 
 fn get_random_ds_index_from_seed(s: &str, num_data_source: u8) -> u8 {
@@ -69,17 +77,14 @@ fn prepare_impl(input: Input) {
     );
 }
 
-fn str_to_vec(input: &String) -> Vec<u8> {
-    (0..input.len())
-        .step_by(2)
-        .map(|i| u8::from_str_radix(&input[i..i + 2], 16).unwrap())
-        .collect()
-}
-
 #[no_mangle]
 fn execute_impl(_input: Input) -> Output {
+    let concat_data = ext::load_majority::<String>(1).unwrap();
+    assert!(concat_data.len() == 288);
+
     Output {
-        hash: str_to_vec(&ext::load_majority::<String>(1).unwrap()),
+        proof: decode_hex(&concat_data[0..160]), // The first 160 characters is the proof
+        result: decode_hex(&concat_data[160..288]), // The last 128 characters is the result
     }
 }
 
