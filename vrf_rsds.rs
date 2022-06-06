@@ -6,6 +6,7 @@ use sha3::{Digest, Sha3_256};
 struct Input {
     seed: String,
     time: u64,
+    worker_address: Vec<u8>, // The worker should use this field to prevent front-running.
 }
 
 #[derive(OBIEncode, OBISchema)]
