@@ -1,10 +1,11 @@
 use obi::{OBIDecode, OBIEncode, OBISchema};
 use owasm_kit::{execute_entry_point, ext, oei, prepare_entry_point};
 use sha3::{Digest, Sha3_256};
+use hex;
 
 #[derive(OBIDecode, OBISchema)]
 struct Input {
-    seed: String,
+    seed: Vec<u8>,
     time: u64,
     worker_address: Vec<u8>, // The worker should use this field to prevent front-running.
 }
@@ -27,13 +28,6 @@ fn get_hash(x: &[u8]) -> Vec<u8> {
     let mut output = vec![0u8; 32];
     output.copy_from_slice(&hasher.finalize());
     output
-}
-
-fn decode_hex(input: &str) -> Vec<u8> {
-    (0..input.len())
-        .step_by(2)
-        .map(|i| u8::from_str_radix(&input[i..i + 2], 16).unwrap())
-        .collect()
 }
 
 fn get_random_ds_index_from_seed(s: &str, num_data_source: u8) -> u8 {
@@ -70,7 +64,9 @@ fn mod_index_to_ds_id(i: u8) -> i64 {
 
 #[no_mangle]
 fn prepare_impl(input: Input) {
-    let s = format!("{} {}", input.seed, input.time);
+    assert!(input.seed.len() <= 32);
+
+    let s = format!("{} {}", hex::encode(input.seed), input.time);
     oei::ask_external_data(
         1,
         mod_index_to_ds_id(get_random_ds_index_from_seed(&s, NUM_DS)),
@@ -81,33 +77,19 @@ fn prepare_impl(input: Input) {
 #[no_mangle]
 fn execute_impl(_input: Input) -> Output {
     let concat_data = ext::load_majority::<String>(1).unwrap();
-    assert!(concat_data.len() == 288);
+    assert_eq!(concat_data.len(), 288);
 
     Output {
-        proof: decode_hex(&concat_data[0..160]), // The first 160 characters is the proof
-        result: decode_hex(&concat_data[160..288]), // The last 128 characters is the result
+        // The first 160 characters is the proof
+        proof: hex::decode(&concat_data[0..160]).unwrap().into(),
+        // The last 128 characters is the result
+        result: hex::decode(&concat_data[160..288]).unwrap().into(),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use obi::get_schema;
-    use std::collections::*;
-
-    #[test]
-    fn test_get_schema() {
-        let mut schema = HashMap::new();
-        Input::add_definitions_recursively(&mut schema);
-        Output::add_definitions_recursively(&mut schema);
-        let input_schema = get_schema(String::from("Input"), &schema);
-        let output_schema = get_schema(String::from("Output"), &schema);
-        println!("{}/{}", input_schema, output_schema);
-        // assert_eq!(
-        //     "{public_key:string,seed:string,time:u64}/{hash:bytes}",
-        //     format!("{}/{}", input_schema, output_schema),
-        // );
-    }
 
     fn assert_all(input: String, expected_outputs: Vec<u8>) {
         for (i, n_ds) in expected_outputs.iter().zip(2..255) {
