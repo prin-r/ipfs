@@ -19,7 +19,7 @@ const D2: i64 = 487;
 const D3: i64 = 488;
 
 fn prepare_impl(input: Input) {
-    let calldata = format!("{} {} {}", input.quote, input.base, input.multiplier);
+    let calldata = format!("{} {} {}", input.base, input.quote, input.timestamp);
     oei::ask_external_data(D1, D1, calldata.as_bytes());
     oei::ask_external_data(D2, D2, calldata.as_bytes());
     oei::ask_external_data(D3, D3, calldata.as_bytes());
@@ -41,9 +41,9 @@ fn median(arr: &mut Vec<f64>) -> f64 {
 }
 
 fn execute_impl(input: Input) -> Output {
-    let a: f64 = median(ext::load_input::<String>(D1).map(|s| s.parse().unwrap()).collect());
-    let b: f64 = median(ext::load_input::<String>(D2).map(|s| s.parse().unwrap()).collect());
-    let c: f64 = median(ext::load_input::<String>(D3).map(|s| s.parse().unwrap()).collect());
+    let a: f64 = median(&mut ext::load_input::<String>(D1).map(|s| s.parse().unwrap()).collect());
+    let b: f64 = median(&mut ext::load_input::<String>(D2).map(|s| s.parse().unwrap()).collect());
+    let c: f64 = median(&mut ext::load_input::<String>(D3).map(|s| s.parse().unwrap()).collect());
 
     Output {
         price: (f64::max(f64::min(a, b), f64::min(f64::max(a, b), c)) * input.multiplier as f64) as u64
