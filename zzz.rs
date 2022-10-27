@@ -41,12 +41,14 @@ fn median(arr: &mut Vec<f64>) -> f64 {
 }
 
 fn execute_impl(input: Input) -> Output {
-    let a: f64 = median(&mut ext::load_input::<String>(D1).map(|s| s.parse().unwrap()).collect());
-    let b: f64 = median(&mut ext::load_input::<String>(D2).map(|s| s.parse().unwrap()).collect());
-    let c: f64 = median(&mut ext::load_input::<String>(D3).map(|s| s.parse().unwrap()).collect());
-
     Output {
-        price: (f64::max(f64::min(a, b), f64::min(f64::max(a, b), c)) * input.multiplier as f64) as u64
+        price: (
+            median(&mut ext::load_input::<String>(D1)
+                .chain(ext::load_input::<String>(D2))
+                .chain(ext::load_input::<String>(D3))
+                .map(|s| s.parse().unwrap()).collect()
+            ) * input.multiplier as f64
+        ) as u64
     }
 }
 
