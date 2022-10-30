@@ -9,7 +9,7 @@ use hex;
 #[derive(OBIDecode, OBISchema)]
 struct Input {
     seed: Vec<u8>,
-    time: u64,
+    time: u64, // In Unix time
     worker_address: Vec<u8>, // The worker should use this field to prevent front-running.
 }
 
@@ -68,8 +68,8 @@ fn get_ds_from_input(ds_input: &str) -> DataSources {
 }
 
 fn prepare_impl(input: Input) {
-    if input.seed.len() < 1 || input.seed.len() > 32 {
-        panic!("Error seed out of range [1..32]");
+    if input.seed.len() != 32 {
+        panic!("Error seed must be bytes32");
     }
 
     if input.time < 1 {
