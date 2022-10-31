@@ -97,7 +97,7 @@ fn execute_impl(input: Input) -> Output {
     );
 
     match verification_result {
-        Ok(true) => Output { result: hex::decode(&concat_data[160..288]).unwrap().into() },
+        Ok(true) => Output { result: get_hash(&hex::decode(&concat_data[160..288]).unwrap()) },
         Ok(false) => panic!("verification result is false"),
         Err(err_code) => panic!("verification error with code {}", err_code),
     }
