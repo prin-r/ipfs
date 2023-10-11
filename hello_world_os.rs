@@ -8,10 +8,8 @@ struct Input { word: String }
 struct Output { result: String }
 
 fn prepare_impl(input: Input) {
-    match input.word.len() {
-        0 => panic!("Error: word.len() must be > 0"),
-        _ => oei::ask_external_data(6, 1, input.word.as_bytes())
-    }
+    if input.word.is_empty() { panic!("Error: word is empty"); }
+    oei::ask_external_data(1, 6, input.word.as_bytes());
 }
 
 fn execute_impl(_: Input) -> Output {
