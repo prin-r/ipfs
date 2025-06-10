@@ -6,6 +6,8 @@ use sha3::{Digest, Sha3_256};
 use std::str::FromStr;
 use hex;
 
+// {requester_hash:[u8],seed:[u8],time:u64,task_nonce:u64}/{result:[u8]}
+
 #[derive(OBIDecode, OBISchema)]
 struct Input {
     requester_hash: Vec<u8>,
