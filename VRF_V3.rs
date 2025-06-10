@@ -6,6 +6,9 @@ use sha3::{Digest, Sha3_256};
 use std::str::FromStr;
 use hex;
 
+// An Oracle Script featuring on-chain verification, random DS selection, and the inclusion of essential parameters in its calldata.
+//
+// Oracle Script Schema
 // {requester_hash:[u8],seed:[u8],time:u64,task_nonce:u64}/{result:[u8]}
 
 #[derive(OBIDecode, OBISchema)]
