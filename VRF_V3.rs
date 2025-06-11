@@ -6,17 +6,13 @@ use sha3::{Digest, Sha3_256};
 use std::str::FromStr;
 use hex;
 
-// An Oracle Script featuring on-chain verification, random DS selection, and the inclusion of essential parameters in its calldata.
-//
-// Oracle Script Schema
-// {requester_hash:[u8],seed:[u8],time:u64,task_nonce:u64}/{result:[u8]}
+// An Oracle Script featuring on-chain verification and random DS selection.
+// schema="{seed:[u8],time:u64}/{result:[u8]}"
 
 #[derive(OBIDecode, OBISchema)]
 struct Input {
-    requester_hash: Vec<u8>,
     seed: Vec<u8>,
     time: u64, // In Unix time
-    task_nonce: u64,
 }
 
 #[derive(OBIEncode, OBISchema)]
@@ -74,10 +70,6 @@ fn get_ds_from_input(ds_input: &str) -> DataSources {
 }
 
 fn prepare_impl(input: Input) {
-    if input.requester_hash.len() != 32 {
-        panic!("Error requester_hash must be bytes32");
-    }
-
     if input.seed.len() != 32 {
         panic!("Error seed must be bytes32");
     }
@@ -86,10 +78,10 @@ fn prepare_impl(input: Input) {
         panic!("Error time must be > 0");
     }
 
-    let ds_input = format!("{} {} {}", hex::encode(input.seed), input.time, input.task_nonce);
+    let ds_input = format!("{} {}", hex::encode(input.seed), input.time);
     oei::ask_external_data(
         1,
-        i64::from_str(get_ds_from_input(&ds_input).get_str("ds_id").unwrap()).unwrap(),
+        i64::from_str( get_ds_from_input(&ds_input).get_str("ds_id").unwrap()).unwrap(),
         ds_input.as_bytes(),
     );
 }
@@ -98,7 +90,7 @@ fn execute_impl(input: Input) -> Output {
     let concat_data = ext::load_majority::<String>(1).unwrap();
     assert_eq!(concat_data.len(), 288);
 
-    let ds_input = format!("{} {} {}", hex::encode(input.seed), input.time, input.task_nonce);
+    let ds_input = format!("{} {}", hex::encode(input.seed), input.time);
     let verification_result = oei::ecvrf_verify(
         &hex::decode(get_ds_from_input(&ds_input).get_str("pubkey").unwrap()).unwrap(),
         // The first 160 characters is the proof
