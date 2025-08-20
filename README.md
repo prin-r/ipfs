@@ -1,6 +1,6 @@
 * Compute:
 
 
-  $f(x) \;=\; \text{TotalTxGasUsed} - \text{targetGasUsed}$
+  $f(x) = \text{TotalTxGasUsed} - \text{targetGasUsed}$
 
   
