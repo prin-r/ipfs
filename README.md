@@ -427,9 +427,9 @@ if __name__ == "__main__":
 
 We fit three polynomials of **calldata length** $x$:
 
-* **Linear**: $a_1 x + a_0$
-* **Quadratic**: $a_2 x^2 + a_1 x + a_0$
-* **Cubic**: $a_3 x^3 + a_2 x^2 + a_1 x + a_0$
+* **Linear**:    $a_0 + a_1 x$
+* **Quadratic**: $a_0 + a_1 x + a_2 x^2$
+* **Cubic**:     $a_0 + a_1 x + a_2 x^2 + a_3 x^3$
 
 ### Validation (Monte-Carlo CV)
 
