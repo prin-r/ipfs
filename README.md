@@ -2,10 +2,9 @@
 
 > **Goal.** Enable a relayer with **minimal native balance** to keep relaying indefinitely, by paying the **entire transaction gas** from the **consumer’s vault**. To do this, we must estimate:
 >
-> $$
+> $
 > \textbf{TotalTxGasUsed} \;\approx\; \underbrace{f(x)}_{\text{router + EVM overhead}} \;+\; \underbrace{\text{targetGasUsed}}_{\text{consumer-side work}}
-> $$
-> ![img](./images/linear_candlestick.png)
+> $
 >
 > where $x$ = calldata length (bytes) of `relay(...)`. We **measure** `targetGasUsed` on-chain (or in Foundry) and **learn** $f(x)$ empirically from real transactions.
 
