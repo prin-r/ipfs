@@ -1,11 +1,11 @@
 # Estimating Full Relaying Gas Inside Solidity
 
 > **Goal.** Enable a relayer with **minimal native balance** to keep relaying indefinitely, by paying the **entire transaction gas** from the **consumer’s vault**. To do this, we must estimate:
->
+>```
 >TotalTxGasUsed ≈ f(x) + targetGasUsed
 >│ └─ consumer-side work (easy to measure on-/in-test)
 >└─ router + EVM overhead (learned from data)
->
+>```
 > where $x$ = calldata length (bytes) of `relay(...)`. We **measure** `targetGasUsed` on-chain (or in Foundry) and **learn** $f(x)$ empirically from real transactions.
 
 ---
