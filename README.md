@@ -1,4 +1,4 @@
-# Gas Experiment Report — Estimating Full Transaction Gas From Calldata Size
+# Estimating Full Transaction Gas From Calldata Size
 
 This document explains the **Foundry** test design, the **polynomial models** (linear / quadratic / cubic), the **Monte-Carlo** validation, and the **conclusions** for the on-chain environment.
 
@@ -83,16 +83,12 @@ The Monte-Carlo cross-validation in later sections evaluates these hypotheses ag
 
 To empirically determine the optimal model for `baseGas(x)`, we follow a four-step process. The goal is to isolate the router and EVM overhead as a function of calldata length `x`, which we assume to be a polynomial.
 
------
-
 ### 1) Data Preparation
 
 First, we construct a dataset of `(x, baseGas)` pairs for each target network (e.g., Sepolia, Hoodi).
 
   - **`x`**: The `calldata` size in bytes for each relayed transaction.
   - **`baseGas`**: The calculated overhead, derived from on-chain receipts as `receipt.gasUsed − targetGasUsed`.
-
------
 
 ### 2) Baseline Model Fitting
 
@@ -148,8 +144,6 @@ y = ax^3+bx^2+cx+d | a≈-6.92054848651535e-10 b≈1.6157890752213517e-05 c≈16
 This output shows a dominant linear relationship of ~16 gas/byte, with a small positive quadratic term consistent with memory expansion costs.
 
 The negative cubic term suggests potential overfitting. This is logically inconsistent because `baseGas(x)` must be a monotonically increasing function, as it is impossible for gas costs to decrease as calldata size increases.
-
------
 
 ### 3) Model Selection via Monte Carlo Cross-Validation
 
