@@ -1,108 +1,229 @@
-# Estimating Full Relaying Gas Inside Solidity
+# Gas Experiment Report — Estimating Full Transaction Gas From Calldata Size
 
-> **Goal.** Enable a relayer with **minimal native balance** to keep relaying indefinitely, by paying the **entire transaction gas** from the **consumer’s vault**. To do this, we must estimate:
->```
->TotalTxGasUsed ≈ f(x) + targetGasUsed
->│ └─ consumer-side work (easy to measure on-/in-test)
->└─ router + EVM overhead (learned from data)
->```
-> where $x$ = calldata length (bytes) of `relay(...)`. We **measure** `targetGasUsed` on-chain (or in Foundry) and **learn** $f(x)$ empirically from real transactions.
+This document explains the **Foundry** test design, the **polynomial models** (linear / quadratic / cubic), the **Monte-Carlo** validation, and the **conclusions** for the on-chain environment.
+
+> **Goal.** Let a relayer with *minimal native balance* relay forever by paying the **entire transaction gas** from the **consumer’s vault**.
+> We split a relay tx into two parts:
+>
+> ```
+> TotalTxGasUsed  =  baseGas(x)  +  targetGasUsed
+>                    ^              ^
+>                    |              └─ measured consumer-side work (easy)
+>                    └─ router + EVM overhead, a function of calldata length x
+> ```
+>
+> * `targetGasUsed` = the “consumer side” gas, which is reimbursed to the relayer from the vault.
+> * `baseGas(x)`    = everything else (intrinsic base, calldata pricing, memory expansion, cold/warm penalties, router overhead).
+> * We **measure** `targetGasUsed` and **learn** `baseGas(x)` from data.
+
+---
+
+## Contents
+
+* [Overview](#overview)
+* [Intuition And Hypothesis](#intuition-and-hypothesis)
+* [Foundry Test](#foundry-test)
+* [On-Chain](#on-chain)
+* [Modeling $f(x)$](#modeling-fx)
+* [Results (Typical)](#results-typical)
+* [Putting It Into Production](#putting-it-into-production)
+* [Results](#figures--placeholders)
+* [Transaction ](#transaction-placeholders)
+* [Key Code Snippets](#key-code-snippets)
+* [Appendix: EVM Cost Anatomy (Plain-Text)](#appendix-evm-cost-anatomy-plain-text)
+* [Summary](#summary)
 
 ---
 
 ## Overview
 
-* We split the transaction gas into two parts:
+We decompose the tx gas:
 
-  * **`targetGasUsed`**: The consumer's cost, which varies depending on the specific consumer. However, it is relatively easy to measure with `gasleft()` or via an on-chain **Withdrawn** event with some specific set of parameters (`gasPrice=1` and `additionalGasUsed=0`).
-  * **$f(x)$**: everything else (intrinsic base, calldata pricing, memory expansion, cold/warm effects, router overhead, etc.). Hard to model analytically.
+* **`targetGasUsed`** : **consumer-side** cost (settled from the vault). Easy to read on-chain (event) or measure in Foundry with `Δgasleft()` and `Δbalance`.
+* **`baseGas(x)`** &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;: **router + EVM** overhead that depends mainly on **calldata length** `x`.
 
-* We model $f(x)$ with **linear**, **quadratic**, and **cubic** polynomials in **calldata length** $x$, and choose the best via Monte-Carlo cross-validation on real receipts (e.g., from Sepolia, Hoodi, Foundry).
-    
-    While polynomials of a degree higher than cubic are possible, we do not consider them. We found that the cubic model already shows signs of overfitting, which implies that any higher-degree polynomial would overfit the data even more.
-
+We fit **linear**, **quadratic**, and **cubic** polynomials of `x` and pick the best via **Monte-Carlo cross-validation** (on Sepolia/hoodi receipts). In practice, **quadratic** wins: linear underfits; cubic often overfits.
 
 ---
 
-## Why Quadratic? (Yellow Paper intuition)
+## Intuition And Hypothesis
 
-Parts of **TotalTxGasUsed** scale **linearly** with calldata bytes, while others exhibit **non-linear** behavior:
+It’s useful to sketch **plausible shapes** for `baseGas(x)` (the portion of total gas not accounted for by the consumer’s own work).
 
-* **Intrinsic base gas**: `21000`.
-* **Calldata bytes**: **16** gas per **non-zero** byte, **4** per **zero** byte (modern networks post-Istanbul).
-* **Memory expansion** (Yellow Paper): the cost to expand memory from $a_0$ to $a_1$ 32-byte words is:
+### 1) Strong linearity
 
-  $$
-  C_{\text{mem}}(a) \;=\; G_{\text{memory}}\cdot a \;+\; \left\lfloor \frac{a^2}{512} \right\rfloor
-  \quad\Rightarrow\quad
-  \Delta C \;=\; C_{\text{mem}}(a_1) - C_{\text{mem}}(a_0)
-  $$
+Post-Istanbul, calldata is priced per byte: roughly **16 gas per non-zero byte** and **4 gas per zero byte**. If the relay payload grows proportionally with the number of signals, this induces a **dominant linear trend** in `x = calldata.length`.
 
-  This introduces an **approximately quadratic** term. Any per-signal looping that touches memory can amplify it.
-* **Cold vs warm** accesses (EIP-2929): the **first** access to a storage slot/account is more expensive; subsequent accesses are cheaper. This creates offsets/variance across runs but does not negate the overall linear/quadratic trend.
+### 2) Subtle quadraticity
 
-**Implication:** A **linear** model tends to **underfit** because it cannot capture the curvature introduced by memory expansion costs. On the other hand, a **cubic** model often **overfits** due to its high variance.
+The EVM charges for growing the transient memory footprint. A plain-text rendition of the memory cost model (see [Yellow Paper](https://ethereum.github.io/yellowpaper/paper.pdf)):
 
-We also found that the best-fit parameters for a cubic model can produce a function that is not always increasing for positive inputs ($x > 0$). This is an impossible scenario, as **gas usage must be a monotonically increasing function** which means it should never decrease as the amount of data grows.
+```
+C_mem(a) = G_memory * a + floor(a^2 / 512)
+DeltaC   = C_mem(a1) - C_mem(a0)
+```
 
----
+where `a` is the size in 32-byte words. The `a^2/512` term can introduce **gentle curvature** (sub-quadratic over typical ranges) when decoding, copying, or aggregating arrays derived from calldata. In many real paths, this quadratic component is **present but small** relative to the linear calldata term.
 
-## Foundry Test Design
+### 3) The higher-order effects (e.g., cubic) may appear
 
-### What we measure in Foundry
+In principle, it is possible if memory expansion compounds in a way that scales super-linearly with payload (e.g., nested growth, repeated re-allocations tied to `x`). In practice we expect this to be **weak**, and any apparent cubic fit could be a symptom of **overfitting** rather than a true system property.
 
-Inside each test trial:
+**Modeling stance (to be tested empirically):**
 
-1. Build the payload for `relay(bytes,address,uint256)` with **N** signals.
-2. Measure:
+* Start with **linear** as a baseline (captures calldata pricing).
+* Allow **quadratic** to capture mild curvature from memory expansion.
+* Treat **cubic** with caution: higher degrees can reduce in-sample error but often **overfit** and generalize worse to unseen payload sizes.
 
-   * `relayGas = gasleft_before - gasleft_after` (gas spent by the call in that test),
-   * `targetGasUsed = relayer.balance_diff` (with `gasPrice=1` and `additionalGasUsed=0` this equals the consumer-side cost),
-3. Compute experimental base: $baseGas = relayGas − targetGasUsed$
-
-   (just for internal comparisons, but **not** the full chain-level $f(x)$)
-
-> For **true** $f(x)$ we rely on **on-chain receipts** (next section). We use **Foundry** primarily to **express and validate the idea**: while its measurements can differ from the **on-chain** due to **cold/warm slot effects**, the trends and scaling behavior align closely with real transactions. Foundry’s isolates remain very useful for **sanity checks**, **storage-warming experiments**, and **calibration** (e.g., deriving good `additionalGasUsed` coefficients) even if they don’t capture every L1 nuance.
-
-
-### Keeping trials clean
-
-* **Snapshot/revert per trial** to reduce hot-storage bias leaking across measurements:
-
-  * Take a snapshot **after** any one-time “world initialization”, then revert to it before each run.
-* **Reset the free memory pointer** before each relay to reduce memory accumulation:
-
-  ```solidity
-  assembly { mstore(0x40, 0x80) }
-  ```
-* Validate that relay effects are correct (prices/timestamps updated, sequence advanced, etc.).
-
-### Calibrating the router
-
-* Fit a quadratic $c_2x^2 + c_1x + c_0$ to the `baseGas` vs `calldataLen`,
-* Pack coefficients (e.g., 3×80-bit) and call `router.setAdditionalGasUsed(...)`,
-* Verify the **residual gap** between compensated router payout and measured gas shrinks (we assert a small bound, e.g., < \~50 gas).
+The Monte-Carlo cross-validation in later sections evaluates these hypotheses against real receipts.
 
 ---
 
-## On-Chain Data Collection (Python)
+## Methodology
 
-To learn **$f(x)$** from real networks:
+To empirically determine the optimal model for `baseGas(x)`, we follow a four-step process. The goal is to isolate the router and EVM overhead as a function of calldata length `x`, which we assume to be a polynomial.
 
-* For each relay **transaction**:
+-----
 
-  * Get **receipt.gasUsed** (`TotalTxGasUsed`).
-  * Extract the router’s **Withdrawn** event to get **`targetGasUsed`**.
-  * Fetch the raw **tx input** to compute **calldata length** $x$.
-* Compute:
+### 1) Data Preparation
 
-  $f(x) = \text{TotalTxGasUsed} - \text{targetGasUsed}$
+First, we construct a dataset of `(x, baseGas)` pairs for each target network (e.g., Sepolia, Hoodi).
 
-* Collect pairs $(x, f(x))$ for Sepolia/hoodi.
+  - **`x`**: The `calldata` size in bytes for each relayed transaction.
+  - **`baseGas`**: The calculated overhead, derived from on-chain receipts as `receipt.gasUsed − targetGasUsed`.
 
-> We’ve included a script that prints a single-line summary per tx and emits a final list of `(calldata_len, f(x))`.
-<details>
-  <summary>Show Python code</summary>
+-----
+
+### 2) Baseline Model Fitting
+
+To gain an initial understanding of the data's structure, we perform a single split of the dataset into training and validation sets. We then fit linear, quadratic, and cubic polynomials to the training data.
+
+This step provides a quick sanity check of the model coefficients and reveals the dominant trends.
+
+**An Example Implementation:**
+
+```python
+import numpy as np
+
+# Sample dataset of (calldata_length, base_gas) pairs
+xy = [[356, 96455],[420, 97561],[484, 98655],[548, 99737],[612, 100807],[676, 101901],[740, 102983],[804, 104066],[868, 105148],[932, 106231],[996, 107313],
+# ... (data continues)
+]
+
+calldata_len = [xx for xx, _ in xy]
+base_gas     = [yy for _, yy in xy]
+
+# NOTE: This 50/50 split is arbitrary.
+split = int(len(xy) * 0.5)
+train_x = np.array(calldata_len[:split])
+train_y = np.array(base_gas[:split])
+val_x   = np.array(calldata_len[split:])
+val_y   = np.array(base_gas[split:])
+
+# Fit
+lin  = np.polyfit(train_x, train_y, 1)
+quad = np.polyfit(train_x, train_y, 2)
+cube = np.polyfit(train_x, train_y, 3)
+
+print("--- Optimal Linear ---")
+print(f"y = a*x + b    | a≈{lin[0]}  b≈{lin[1]}")
+print("\n--- Optimal Quadratic ---")
+print(f"y = a*x^2+bx+c | a≈{quad[0]} b≈{quad[1]} c≈{quad[2]}")
+print("\n--- Optimal Cubic ---")
+print(f"y = ax^3+bx^2+cx+d | a≈{cube[0]} b≈{cube[1]} c≈{cube[2]} d≈{cube[3]}")
+```
+
+**Example Output:**
+```
+--- Optimal Linear ---
+y = a*x + b    | a≈16.937874399759874  b≈90434.389654862
+
+--- Optimal Quadratic ---
+y = a*x^2+bx+c | a≈1.2163350165786751e-05 b≈16.89106982832197 c≈90469.04041220056
+
+--- Optimal Cubic ---
+y = ax^3+bx^2+cx+d | a≈-6.92054848651535e-10 b≈1.6157890752213517e-05 c≈16.88444633635134 d≈90471.92608110276
+```
+
+This output shows a dominant linear relationship of ~16 gas/byte, with a small positive quadratic term consistent with memory expansion costs.
+
+The negative cubic term suggests potential overfitting. This is logically inconsistent because `baseGas(x)` must be a monotonically increasing function, as it is impossible for gas costs to decrease as calldata size increases.
+
+-----
+
+### 3) Model Selection via Monte Carlo Cross-Validation
+
+A single arbitrary data split can be misleading or inaccurate. To robustly select the best model, we use Monte Carlo cross-validation:
+
+1.  Repeat the process of randomly splitting the data into training and validation sets thousands of times (e.g., 5,000-10,000 trials).
+2.  For each trial, fit all three polynomial degrees and calculate their validation error (e.g., Root Mean Square Error - RMSE).
+3.  Aggregate the error metrics (mean and standard deviation) for each model degree across all trials.
+
+The winning model is the one with the lowest average RMSE. As a heuristic (the "one standard deviation rule"), if a simpler model's mean RMSE is within one standard deviation of a more complex model's, the simpler model is preferred to avoid overfitting. We also analyze model stability by varying the training set size (e.g., from 10% to 90%).
+
+---
+
+## Data Collection
+
+We gather `(x, baseGas)` from **two sources**:
+
+### 1) Foundry (repeatable, lab-like)
+
+**A Single Measurement**
+ 1. Build the message `relay(bytes,address,uint256)` for the given **N** signals.
+ 2. Measure:
+    * `relayGas = Δgasleft()` (gas spent by `tunnelRouter.relay(...)` in the test),
+    * `targetGasUsed = Δrelayer.balance` (with `gasPrice=1`, `additionalGas=0` which equals the consumer-side work).
+ 3. Compute a **Foundry** baseline:
+    ```
+        baseGas_foundry = relayGas − targetGasUsed
+    ```
+    just for **sanity checks** and **router calibration**, but **chain-level** `baseGas(x)` comes from **real receipts**:
+
+    ```
+        baseGas_chain = tx.gasUsed − targetGasUsed
+    ```
+
+**For each trial**
+
+ 1. Snapshot/revert per trial to reduce hot-storage bias leaking across measurements:
+    ```solidity
+        uint256 snap = vm.snapshot();
+        // single measurement here
+        vm.revertTo(snap);
+    ```
+
+ 2. Reset the free memory pointer before each relay to reduce memory accumulation:
+    ```solidity
+        assembly { mstore(0x40, 0x80) }
+    ```
+
+ 3. Validate that relay effects are correct (prices/timestamps updated, sequence advanced, etc.).
+
+**Calibrating the router**
+
+  * Fit a quadratic $c_2x^2 + c_1x + c_0$ to the `baseGas(x)` where `x = calldataLen`,
+  * Pack coefficients (e.g., 3×80-bit) and call `tunnelRouter.setAdditionalGasUsed(...)`,
+  * Verify the **residual gap** between compensated router payout and measured gas shrinks (we assert a small bound, e.g., < \~50 gas).
+
+Foundry data is great for router calibration and sanity checks, but our production coefficients are ultimately fit to **on-chain receipts** below.
+
+### 2) On-chain receipts
+
+**For each real relay tx**
+
+1. `total = receipt.gasUsed` → TotalTxGasUsed
+2. `target = withdrawnAmount` (from router event) → targetGasUsed
+3. `x = len(tx.input)` → calldata length
+4. Calculate
+    ```
+        baseGas = total − target
+    ```
+5. Append `(x, baseGas)` to your dataset (per network).
+
+Collect a dataset of pairs `(x, baseGas)` per chain (Sepolia / hoodi / etc).
+
+<details> <summary><code>Python3</code> — click to expand</summary>
 
 ```python
 import json
@@ -110,7 +231,7 @@ from typing import Any, Dict, List, Tuple
 from web3 import Web3
 
 # --- Config ---
-with open("./config.json", "r") as f:
+with open("./txs.json", "r") as f:
     CONFIG = json.load(f)
 
 CHAIN = "hoodi"  # or "sepolia"
@@ -198,10 +319,11 @@ def main() -> None:
 if __name__ == "__main__":
     main()
 ```
+
 </details>
 
-<details>
-    <summary>Show config.json</summary>
+
+<details> <summary><code>txs.json</code> — click to expand</summary>
 
 ```json
 {
@@ -417,87 +539,26 @@ if __name__ == "__main__":
     }
 }
 ```
+
 </details>
 
----
 
-## Modeling $f(x)$
+**Example Output**
 
-### Models
-
-We fit three polynomials of **calldata length** $x$:
-
-* **Linear**:    $a_0 + a_1 x$
-* **Quadratic**: $a_0 + a_1 x + a_2 x^2$
-* **Cubic**:     $a_0 + a_1 x + a_2 x^2 + a_3 x^3$
-
-### Validation (Monte-Carlo CV)
-
-* For **train ratio** $r \in \{0.10,0.11,\dots,0.90\}$:
-
-  * Repeat **K** random splits (e.g., 1000 trials):
-
-    * Fit each degree on the training subset,
-    * Evaluate on validation subset.
-  * Record **mean ± std** of **RMSE** and **MAE**, plus **win rates** (how often a degree wins a metric).
-
-**Model choice:** pick the **lowest mean RMSE**; if a **simpler** model is **within 1 std**, prefer the simpler one.
+```
+[[356, 96455], [420, 97573], [484, 98655], [548, 99725], [612, 100819], [676, 101877], [740, 102983], [804, 104066], [868, 105136], [932, 106231], [996, 107289], [1060, 108396], [1124, 109467], [1188, 110562], [1252, 111645], [1316, 112728], [1380, 113787], [1444, 114871], [1508, 115978], [1572, 117062], [1636, 118133], [1700, 119217], [1764, 120301], [1828, 121397], [1892, 122469], [1956, 123565], [2020, 124649], [2084, 125733], [2148, 126806], [2212, 127890], [2276, 128987], [2340, 130072], [2404, 131132], [2468, 132205], [2532, 133302], [2596, 134399], [2660, 135472], [2724, 136546], [2788, 137667], [2852, 138753], [2916, 139790], [2980, 140900], [3044, 141998], [3108, 143060], [3172, 144158], [3236, 145244], [3300, 146354], [3364, 147428], [3428, 148526], [3492, 149565], [3556, 150663], [3620, 151774], [3684, 152849], [3748, 153960], [3812, 155047], [3876, 156074], [3940, 157185], [4004, 158296], [4068, 159335], [4132, 160459], [4196, 161558], [4260, 162634], [4324, 163710], [4388, 164834], [4452, 165861], [4516, 166973], [4580, 168098], [4644, 169174], [4708, 170226], [4772, 171315], [4836, 172415], [4900, 173516], [4964, 174604], [5028, 175705], [5092, 176770], [5156, 177871], [5220, 178960], [5284, 180025], [5348, 181139], [5412, 182216], [5476, 183317], [5540, 184335], [5604, 185485], [5668, 186599], [5732, 187676], [5796, 188730], [5860, 189808], [5924, 190935], [5988, 192049], [6052, 193079], [6116, 194218], [6180, 195296], [6244, 196423], [6308, 197430], [6372, 198581], [6436, 199672], [6500, 200703], [6564, 201854], [6628, 202933], [6692, 204024]]
+```
 
 ---
 
-## Results (typical)
+## Analysis
 
-* **Quadratic** dominates in mean RMSE across most train ratios, consistent with the **Yellow Paper**’s memory expansion term.
-* **Linear** can be close (or win) for some ratios (especially with narrower x-ranges or already-warm paths), but tends to **underfit** when calldata grows.
-* **Cubic** rarely provides stable gains; it can **overfit** small samples and increases variance.
+### Monte-Carlo cross-validation
 
-**Operational takeaway:** use **Quadratic** for $f(x)$ by default, fall back to Linear if MC-CV shows it’s within 1 std; avoid Cubic unless data clearly warrants it.
+A single train/validation split can be misleading (especially with clustered `x`). Monte-Carlo cross-validation repeatedly draws random train/validation partitions and averages the resulting errors. It reduces variance from any one lucky (or unlucky) split and gives a distribution of errors per model.
 
----
+<details> <summary><code>Python3</code> — click to expand</summary>
 
-## Putting it into Production
-
-1. **From receipts:** build dataset $(x, f(x))$ for each chain.
-2. **Monte-Carlo sweep:** fit 1/2/3, choose degree.
-3. **Store coefficients on-chain** (e.g., packed into `additionalGasUsed` or equivalent).
-4. **At relay time:** estimate
-
-   $$
-   \widehat{\text{TotalTxGas}} \;=\; \widehat{f}(x) \;+\; \text{targetGasUsed}
-   $$
-
-   and withdraw that amount from the **consumer’s vault** to reimburse the relayer **for the entire transaction**.
-5. **Periodic recalibration:** re-run the pipeline as code or network conditions change.
-
----
-
-## Placeholders for Figures (to paste in after running the Python script)
-
-* **Figure 1.** Mean RMSE vs train ratio by degree (line plot).
-  ![RMSE vs Train Ratio](./images/rmse_vs_ratio.png)
-
-* **Figure 2.** Degree 1 candlestick: mean ± 1 std of RMSE across train ratios.
-  ![Linear Candlestick](./images/linear_candlestick.png)
-
-* **Figure 3.** Degree 2 candlestick: mean ± 1 std of RMSE across train ratios.
-  ![Quadratic Candlestick](./images/quadratic_candlestick.png)
-
-* **Figure 4.** Degree 3 candlestick: mean ± 1 std of RMSE across train ratios.
-  ![Cubic Candlestick](./images/cubic_candlestick.png)
-
-* **Figure 5.** **Combined candlestick**: all degrees in one chart (mean ± 1 std).
-  ![Combined Candlestick](./images/combined_candlestick.png)
-
----
-
-## Key Code Snippets
-
-### Building $(x, f(x))$ from receipts
-
-<details>
-<summary>Show Python Code and Config</summary>
-
-Code
 ```python
 import json
 import time
@@ -510,7 +571,7 @@ import matplotlib.pyplot as plt
 # --------------------
 # Config
 # --------------------
-CONFIG_PATH = "./config.json"  # expects {"sepolia": [[x,y], ...], "hoodi": ...}
+CONFIG_PATH = "./zzz4_config.json"  # expects {"sepolia": [[x,y], ...], "hoodi": ...}
 DATASET = "sepolia"  # switch to "foundry", "hoodi" etc.
 
 # --------------------
@@ -751,7 +812,7 @@ for d in sorted(df["degree"].unique()):
 
 # 3) Combined "candlestick" view: mean ± 1 std for all degrees on one chart
 plt.figure()
-markers = ['o', 's', '^']  # will cycle if more degrees was added
+markers = ['o', 's', '^']  # will cycle if you add more degrees
 for idx, d in enumerate(sorted(df["degree"].unique())):
     sub = df[(df["degree"] == d) & (df["dataset"] == DATASET)].sort_values("train_ratio")
     plt.errorbar(
@@ -779,448 +840,212 @@ for _, row in winners.iterrows():
     )
 ```
 
-Config
-```json
-{
-    "sepolia": [
-        [356, 96455],
-        [420, 97561],
-        [484, 98655],
-        [548, 99737],
-        [612, 100807],
-        [676, 101901],
-        [740, 102983],
-        [804, 104066],
-        [868, 105148],
-        [932, 106231],
-        [996, 107313],
-        [1060, 108396],
-        [1124, 109479],
-        [1188, 110538],
-        [1252, 111645],
-        [1316, 112716],
-        [1380, 113811],
-        [1444, 114847],
-        [1508, 115978],
-        [1572, 117038],
-        [1636, 118145],
-        [1700, 119229],
-        [1764, 120277],
-        [1828, 121385],
-        [1892, 122457],
-        [1956, 123553],
-        [2020, 124625],
-        [2084, 125721],
-        [2148, 126806],
-        [2212, 127890],
-        [2276, 128963],
-        [2340, 130060],
-        [2404, 131156],
-        [2468, 132241],
-        [2532, 133326],
-        [2596, 134411],
-        [2660, 135496],
-        [2724, 136558],
-        [2788, 137667],
-        [2852, 138741],
-        [2916, 139838],
-        [2980, 140924],
-        [3044, 141974],
-        [3108, 143084],
-        [3172, 144182],
-        [3236, 145244],
-        [3300, 146354],
-        [3364, 147440],
-        [3428, 148526],
-        [3492, 149565],
-        [3556, 150687],
-        [3620, 151774],
-        [3684, 152849],
-        [3748, 153888],
-        [3812, 155035],
-        [3876, 156110],
-        [3940, 157209],
-        [4004, 158284],
-        [4068, 159371],
-        [4132, 160459],
-        [4196, 161534],
-        [4260, 162646],
-        [4324, 163734],
-        [4388, 164810],
-        [4452, 165873],
-        [4516, 166949],
-        [4580, 168074],
-        [4644, 169150],
-        [4708, 170250],
-        [4772, 171339],
-        [4836, 172439],
-        [4900, 173492],
-        [4964, 174616],
-        [5028, 175693],
-        [5092, 176806],
-        [5156, 177895],
-        [5220, 178960],
-        [5284, 180049],
-        [5348, 181127],
-        [5412, 182240],
-        [5476, 183305],
-        [5540, 184383],
-        [5604, 185485],
-        [5668, 186575],
-        [5732, 187616],
-        [5796, 188766],
-        [5860, 189832],
-        [5924, 190923],
-        [5988, 192037],
-        [6052, 193127],
-        [6116, 194158],
-        [6180, 195248],
-        [6244, 196351],
-        [6308, 197478],
-        [6372, 198593],
-        [6436, 199648],
-        [6500, 200775],
-        [6564, 201854],
-        [6628, 202945],
-        [6692, 204024]
-    ],
-    "hoodi": [
-        [356, 96455],
-        [420, 97573],
-        [484, 98655],
-        [548, 99725],
-        [612, 100819],
-        [676, 101877],
-        [740, 102983],
-        [804, 104066],
-        [868, 105136],
-        [932, 106231],
-        [996, 107289],
-        [1060, 108396],
-        [1124, 109467],
-        [1188, 110562],
-        [1252, 111645],
-        [1316, 112728],
-        [1380, 113787],
-        [1444, 114871],
-        [1508, 115978],
-        [1572, 117062],
-        [1636, 118133],
-        [1700, 119217],
-        [1764, 120301],
-        [1828, 121397],
-        [1892, 122469],
-        [1956, 123565],
-        [2020, 124649],
-        [2084, 125733],
-        [2148, 126806],
-        [2212, 127890],
-        [2276, 128987],
-        [2340, 130072],
-        [2404, 131132],
-        [2468, 132205],
-        [2532, 133302],
-        [2596, 134399],
-        [2660, 135472],
-        [2724, 136546],
-        [2788, 137667],
-        [2852, 138753],
-        [2916, 139790],
-        [2980, 140900],
-        [3044, 141998],
-        [3108, 143060],
-        [3172, 144158],
-        [3236, 145244],
-        [3300, 146354],
-        [3364, 147428],
-        [3428, 148526],
-        [3492, 149565],
-        [3556, 150663],
-        [3620, 151774],
-        [3684, 152849],
-        [3748, 153960],
-        [3812, 155047],
-        [3876, 156074],
-        [3940, 157185],
-        [4004, 158296],
-        [4068, 159335],
-        [4132, 160459],
-        [4196, 161558],
-        [4260, 162634],
-        [4324, 163710],
-        [4388, 164834],
-        [4452, 165861],
-        [4516, 166973],
-        [4580, 168098],
-        [4644, 169174],
-        [4708, 170226],
-        [4772, 171315],
-        [4836, 172415],
-        [4900, 173516],
-        [4964, 174604],
-        [5028, 175705],
-        [5092, 176770],
-        [5156, 177871],
-        [5220, 178960],
-        [5284, 180025],
-        [5348, 181139],
-        [5412, 182216],
-        [5476, 183317],
-        [5540, 184335],
-        [5604, 185485],
-        [5668, 186599],
-        [5732, 187676],
-        [5796, 188730],
-        [5860, 189808],
-        [5924, 190935],
-        [5988, 192049],
-        [6052, 193079],
-        [6116, 194218],
-        [6180, 195296],
-        [6244, 196423],
-        [6308, 197430],
-        [6372, 198581],
-        [6436, 199672],
-        [6500, 200703],
-        [6564, 201854],
-        [6628, 202933],
-        [6692, 204024]
-    ],
-    "foundry": [
-        [356, 113559],
-        [420, 114298],
-        [484, 115065],
-        [548, 115835],
-        [612, 116605],
-        [676, 117375],
-        [740, 118145],
-        [804, 118916],
-        [868, 119686],
-        [932, 120457],
-        [996, 121227],
-        [1060, 121998],
-        [1124, 122769],
-        [1188, 123540],
-        [1252, 124311],
-        [1316, 125082],
-        [1380, 125853],
-        [1444, 126625],
-        [1508, 127396],
-        [1572, 128168],
-        [1636, 128939],
-        [1700, 129711],
-        [1764, 130483],
-        [1828, 131255],
-        [1892, 132027],
-        [1956, 132799],
-        [2020, 133571],
-        [2084, 134343],
-        [2148, 135116],
-        [2212, 135888],
-        [2276, 136661],
-        [2340, 137434],
-        [2404, 138206],
-        [2468, 138979],
-        [2532, 139752],
-        [2596, 140525],
-        [2660, 141298],
-        [2724, 142072],
-        [2788, 142845],
-        [2852, 143619],
-        [2916, 144392],
-        [2980, 145166],
-        [3044, 145940],
-        [3108, 146714],
-        [3172, 147488],
-        [3236, 148262],
-        [3300, 149036],
-        [3364, 149810],
-        [3428, 150584],
-        [3492, 151359],
-        [3556, 152133],
-        [3620, 152908],
-        [3684, 153683],
-        [3748, 154458],
-        [3812, 155233],
-        [3876, 156008],
-        [3940, 156783],
-        [4004, 157558],
-        [4068, 158333],
-        [4132, 159109],
-        [4196, 159884],
-        [4260, 160660],
-        [4324, 161436],
-        [4388, 162212],
-        [4452, 162987],
-        [4516, 163763],
-        [4580, 164540],
-        [4644, 165316],
-        [4708, 166092],
-        [4772, 166869],
-        [4836, 167645],
-        [4900, 168422],
-        [4964, 169198],
-        [5028, 169975],
-        [5092, 170752],
-        [5156, 171529],
-        [5220, 172306],
-        [5284, 173083],
-        [5348, 173861],
-        [5412, 174638],
-        [5476, 175415],
-        [5540, 176193],
-        [5604, 176971],
-        [5668, 177749],
-        [5732, 178526],
-        [5796, 179304],
-        [5860, 180082],
-        [5924, 180861],
-        [5988, 181639],
-        [6052, 182417],
-        [6116, 183196],
-        [6180, 183974],
-        [6244, 184753],
-        [6308, 185532],
-        [6372, 186311],
-        [6436, 187090],
-        [6500, 187869],
-        [6564, 188648],
-        [6628, 189427],
-        [6692, 190206],
-        [6756, 190986],
-        [6820, 191765],
-        [6884, 192545],
-        [6948, 193325],
-        [7012, 194104],
-        [7076, 194884],
-        [7140, 195664],
-        [7204, 196445],
-        [7268, 197225],
-        [7332, 198005],
-        [7396, 198785],
-        [7460, 199566],
-        [7524, 200347],
-        [7588, 201127],
-        [7652, 201908],
-        [7716, 202689],
-        [7780, 203470],
-        [7844, 204251],
-        [7908, 205032],
-        [7972, 205814],
-        [8036, 206595],
-        [8100, 207377],
-        [8164, 208158],
-        [8228, 208940],
-        [8292, 209722],
-        [8356, 210503],
-        [8420, 211285],
-        [8484, 212068],
-        [8548, 212850],
-        [8612, 213632],
-        [8676, 214414],
-        [8740, 215197],
-        [8804, 215979],
-        [8868, 216762],
-        [8932, 217545],
-        [8996, 218328],
-        [9060, 219111],
-        [9124, 219894],
-        [9188, 220677],
-        [9252, 221460],
-        [9316, 222243],
-        [9380, 223027],
-        [9444, 223810],
-        [9508, 224594],
-        [9572, 225378],
-        [9636, 226162],
-        [9700, 226946],
-        [9764, 227730],
-        [9828, 228514],
-        [9892, 229298],
-        [9956, 230082],
-        [10020, 230867],
-        [10084, 231651],
-        [10148, 232436],
-        [10212, 233220],
-        [10276, 234005],
-        [10340, 234790],
-        [10404, 235575],
-        [10468, 236360],
-        [10532, 237146],
-        [10596, 237931],
-        [10660, 238716],
-        [10724, 239502],
-        [10788, 240287],
-        [10852, 241073],
-        [10916, 241859],
-        [10980, 242645],
-        [11044, 243431],
-        [11108, 244217],
-        [11172, 245003],
-        [11236, 245789],
-        [11300, 246576],
-        [11364, 247362],
-        [11428, 248149],
-        [11492, 248935],
-        [11556, 249722],
-        [11620, 250509],
-        [11684, 251296],
-        [11748, 252083],
-        [11812, 252870],
-        [11876, 253657],
-        [11940, 254445],
-        [12004, 255232],
-        [12068, 256020],
-        [12132, 256807],
-        [12196, 257595],
-        [12260, 258383],
-        [12324, 259171],
-        [12388, 259959],
-        [12452, 260747],
-        [12516, 261535],
-        [12580, 262324],
-        [12644, 263112],
-        [12708, 263900],
-        [12772, 264689],
-        [12836, 265478],
-        [12900, 266267],
-        [12964, 267056],
-        [13028, 267845],
-        [13092, 268634]
-    ]
-}
-```
-
 </details>
 
-### Monte-Carlo sweep with progress & combined candlesticks
+### What we vary
 
-* Sweeps train ratios 0.10→0.90 (step 0.01), logs progress, writes CSVs, and renders:
+* **Model family**: degree-1 (linear), degree-2 (quadratic), degree-3 (cubic) polynomials of `x`.
+* **Train size**: we sweep `train_ratio` from **0.10 → 0.90** (step 0.01). This shows how each model behaves when you have only a few points versus many.
+* **Random splits**: for each ratio we run **many trials** (e.g., 20k) with different random partitions to sample the error distribution.
 
-  * mean RMSE vs ratio (all degrees),
-  * **three** single-degree candlesticks,
-  * **one** combined candlestick (all degrees).
+Constraint: a degree-`d` polynomial needs at least `d+1` training points; the code enforces this.
+
+### What we measure
+
+For each split and each model we compute:
+
+* **RMSE (Root Mean Squared Error)** — sensitive to larger mistakes, good proxy for *typical squared loss*.
+* **MAE (Mean Absolute Error)** — robust to outliers; measures *typical absolute miss* in gas units.
+* **Min/Max absolute error** — best/worst cases across the validation slice (guardrails).
+
+Across thousands of splits we then report **mean ± std** for RMSE/MAE and **win rates** (fraction of splits where a model is best). We try to find:
+
+* Which model has **lower average error**?
+* How **stable** is that performance (standard deviation)?
+* How often does each model **win** outright?
+
+### Interpreting the figures
+
+1. **Mean RMSE vs Train Ratio (per degree, one chart)**
+   Shows how each model’s *typical* error falls as you feed it more data. Expect curves to drop then flatten.
+
+   * If **linear** stays above **quadratic** for most ratios, linear likely **underfits**.
+   * If **cubic** only wins at very high ratios and has larger variance, it likely **overfits** for small/mid data.
+
+2. **Candlesticks (mean ± 1 std) per degree**
+   Each degree gets its own “error-bar” chart across train ratios. Smaller bars = more **stable** generalization.
+
+3. **Combined candlesticks (all degrees)**
+   Puts all degrees on one plot so you can compare error levels **and** error bars at a glance for each ratio.
+
+4. **Winners table**
+   For each train ratio, we also print which degree has the lowest **mean RMSE**. This is a quick summary of who’s “best” as data availability changes.
+
+### Model-selection
+
+We pick the degree with the **lowest mean RMSE** at the relevant train ratio.
+**Tie-break:** if a *simpler* model’s mean RMSE is within **1 standard deviation** of the best, we choose the simpler model.
+
+### Why quadratic tends to win
+
+* **Linear term** dominates due to calldata pricing (≈16 gas per non-zero byte, ≈4 per zero byte).
+* **Quadratic term** is typically **small but real** from the Yellow Paper’s memory cost (roughly linear + quadratic in memory words). As payload grows, decoding/copying arrays can trigger modest memory expansion.
+* **Cubic** rarely has a consistent physical justification here; when it “wins,” it often reflects overfitting unless you have a *lot* of spread and strong cubic-like effects (uncommon for our case).
+
+### Notices
+
+* **Trials:** more trials → tighter estimates (but longer runtime). We use thousands to average out split noise.
+* **Multiple datasets:** the analysis tags results with the dataset name (e.g., `foundry`, `sepolia`, `hoodi`) to compare environments.
+
+### Apply the choosen model
+
+1. Persist the winning coefficients (usually **quadratic**) for the target dataset.
+2. Pack them on-chain in your chosen fixed-width layout (e.g., 3×80-bit lanes).
+3. Use
+
+   ```
+   baseGas(x) ≈ c2*x^2 + c1*x + c0
+   TotalTxGasUsed ≈ baseGas(x) + targetGasUsed
+   ```
+
+   so the relayer can front minimal native token and be **made whole** from the consumer vault.
+4. Monitor drift: if calldata patterns or EVM changes shift the curve, perform recalibration to update the coefficients.
 
 ---
 
-## Appendix: EVM Cost Anatomy (brief)
+## Results
 
-* **Intrinsic base**: `21000` per tx.
-* **Tx/Calldata bytes**: `16` gas / non-zero byte, `4` / zero byte (post-Istanbul).
-* **Memory expansion** (Yellow Paper):
+This section summarizes the Monte-Carlo cross-validation over the dataset of `(calldata_size, baseGas)` pairs, where `baseGas(x) = tx.gasUsed − targetGasUsed`. We sweep the training ratio from **0.10 → 0.90** (step **0.01**), and for each split fit **linear (deg=1)**, **quadratic (deg=2)**, and **cubic (deg=3)** models of `baseGas(x)`.
 
-  $$
-  C_{\text{mem}}(a) = G_{\text{memory}}\cdot a + \left\lfloor \frac{a^2}{512} \right\rfloor
-  $$
+### Dataset & setup
 
-  Quadratic in the number of 32-byte words $a$.
-* **Cold/warm** access (EIP-2929): first access to a slot/account in a tx is costlier; subsequent accesses are cheaper. This explains intercept shifts and small residuals.
+* **Dataset:** `sepolia` (example shown below; multiple datasets can be run independently and compared)
+* **Train/val splits:** Monte-Carlo random splits per train ratio
+* **Trials per ratio:** large (e.g., 5,000) to stabilize mean/std
+* **Metrics per model & ratio:** **Mean RMSE**, **Std RMSE**, **Mean MAE**, **Std MAE**, plus **win rates** (how often a degree wins for RMSE/MAE/MaxErr across trials)
+
+---
+
+### Sweep results
+
+> Each row aggregates all trials for the given `(dataset, train_ratio, degree)`.
+
+| dataset | train\_ratio | degree |    mean\_rmse |     std\_rmse |     mean\_mae |      std\_mae | win\_rmse\% | win\_mae\% | win\_max\% |
+| :------ | -----------: | -----: | ------------: | ------------: | ------------: | ------------: | -------------: | ------------: | ------------: |
+| sepolia |         0.10 |      1 | 44.7386417866 |  7.6343655385 | 35.1602731464 |  4.7381375849 |           0.13 |          0.13 |         0.205 |
+| sepolia |         0.10 |      2 | 21.2250749941 |  5.7972672391 | 16.0636191321 |  4.3019593741 |          75.97 |        75.715 |        68.655 |
+| sepolia |         0.10 |      3 | 27.8902636709 | 30.8944809159 | 20.0280887839 | 18.0000260342 |          23.90 |        24.155 |        31.140 |
+| sepolia |         0.11 |      1 | 44.0434613733 |  6.7225464004 | 34.7236781733 |  4.1579090745 |          0.055 |         0.050 |         0.080 |
+| sepolia |         0.11 |      2 | 20.6502731990 |  4.1331709345 | 15.6432875606 |  3.2047751314 |         74.885 |        74.970 |        67.285 |
+| sepolia |         0.11 |      3 | 25.5023045863 | 21.2571951118 | 18.5821654316 | 12.4587067921 |         25.060 |        24.980 |        32.635 |
+| sepolia |         0.12 |      1 | 43.5571788577 |  6.1565873814 | 34.4099688681 |  3.8289671593 |          0.020 |         0.025 |         0.045 |
+| sepolia |         0.12 |      2 | 20.2754642191 |  3.5078912663 | 15.3429774572 |  2.7579781805 |         74.585 |        74.810 |        66.145 |
+| sepolia |         0.12 |      3 | 23.9242877511 | 14.4376618507 | 17.5990728822 |  8.5492449054 |         25.395 |        25.165 |        33.810 |
+| sepolia |         0.13 |      1 | 43.1188564250 |  5.7363634942 | 34.1460924103 |  3.5322053243 |          0.000 |         0.000 |         0.005 |
+| sepolia |         0.13 |      2 | 19.9605986747 |  2.9253350885 | 15.1097822145 |  2.3397913744 |         73.425 |        73.970 |        64.835 |
+| sepolia |         0.13 |      3 | 22.9049740714 | 11.5312753511 | 16.9473485322 |  6.8629437007 |         26.575 |        26.030 |        35.160 |
+| …       |            … |      … |             … |             … |             … |             … |              … |             … |             … |
+
+> **Observation:** Quadratic (deg=2) consistently exhibits the **lowest mean RMSE/MAE** with **moderate variance**, while cubic (deg=3) has **larger std** (instability/overfitting) and linear (deg=1) **underfits**.
+
+---
+
+### Per-ratio winners (RMSE)
+
+For each `train_ratio`, the degree with the lowest **mean RMSE**:
+
+| dataset | train\_ratio | degree |    mean\_rmse |
+| :------ | -----------: | -----: | ------------: |
+| sepolia |         0.10 |      2 | 21.2250749941 |
+| sepolia |         0.11 |      2 | 20.6502731990 |
+| sepolia |         0.12 |      2 | 20.2754642191 |
+| sepolia |         0.13 |      2 | 19.9605986747 |
+| sepolia |         0.14 |      2 | 19.7072057299 |
+| sepolia |         0.15 |      2 | 19.5314136854 |
+| sepolia |         0.16 |      2 | 19.3401813605 |
+| sepolia |         0.17 |      2 | 19.2209853393 |
+| sepolia |         0.18 |      2 | 19.0879224237 |
+| sepolia |         0.19 |      2 | 19.0018219507 |
+| sepolia |         0.20 |      2 | 18.8786459713 |
+| sepolia |         0.21 |      2 | 18.7947708730 |
+| sepolia |         0.22 |      2 | 18.6942663442 |
+| …       |            … |      … |             … |
+
+> **Takeaway:** Across the sweep, **quadratic** is the consistent winner for RMSE on this dataset.
+
+---
+
+### Figures
+
+The following images are produced by the analysis script and should be embedded in the repo.
+
+1. **Mean RMSE vs Train Ratio (deg=1,2,3)**
+   ![RMSE vs Train Ratio](./images/rmse_vs_ratio.png)
+   *Quadratic (green) sits below linear and cubic across most ratios.*
+   * **Blue (deg=1 / linear)**: always the worst; high bias. Starts \~**45 gas** RMSE at 10% train, drifts down to \~**38–39 gas** at 90%. It ignores the **EVM memory expansion**, so its error stays high even with lots of data.
+   * **Orange (deg=2 / quadratic)**: consistently accurate across the whole sweep. Starts \~**21 gas**, slides smoothly to \~**17.2–17.4 gas** at 90%.
+   * **Green (deg=3 / cubic)**: unstable with little data (≈**26–28 gas** at 10%), improves quickly and **approaches** quadratic for large train ratios. With small training sets it overfits (big variance → high RMSE). As the training set grows, it stabilizes and gets close to quadratic, but it **doesn’t deliver a systematic gain**
+
+2. **Candlestick (mean ± std RMSE) — Linear**
+   ![Linear Candlestick](./images/linear_candlestick.png)
+   *Linear shows higher mean and relatively middle variance (consistent underfit).*
+   * The mean RMSE starts ≈ **45 gas** at `train_ratio ≈ 0.10` and only drifts down to ≈ **38–39 gas** by `0.90`.
+   * The error bars (±1 std) are wide (high variance) at the small train ratios and large train ratios (≈0.10 and ≈0.90), narrowest around **0.45–0.60**.
+
+3. **Candlestick (mean ± std RMSE) — Quadratic**
+   ![Quadratic Candlestick](./images/quadratic_candlestick.png)
+   *Quadratic exhibits the best bias–variance trade-off: low mean, moderate std.*
+   * The mean RMSE starts around **≈21 gas** at `train_ratio ≈ 0.10` and steadily falls to **≈17 gas** by `0.90`.
+   * The largest improvement is between **0.10 → ~0.30** (roughly **2–3 gas** reduction). Beyond **\~0.40**, improvements are slowing down.
+   * Lowest variance in the middle (**~0.30 → ~0.40**). The error bars (±1 std) are widest near 0.1 and 0.9 and **narrowest around \~0.35**:
+
+4. **Candlestick (mean ± std RMSE) — Cubic**
+   ![Cubic Candlestick](./images/cubic_candlestick.png)
+   *Cubic’s mean can be close at some ratios but with noticeably larger std (overfit risk).*
+   * Around `train_ratio ≈ 0.10–0.15`, the mean RMSE is \~**28–25 gas**, but the **std is large** (upper whiskers > **60 gas**, lower whiskers dip near 0).
+   * As the train set adds points across the `x` range, variance collapses and the mean RMSE drops to **\~19–20 gas**.
+   * From **0.30 → 0.90**, the mean slowly improves to **\~17–18 gas**, roughly on par with degree-2. Error bars remain modest (≈±1.5–2.5 gas), then widen slightly at the high train ratios.
+
+5. **Combined Candlesticks (deg=1,2,3)**
+   ![Combined Candlestick](./images/combined_candlestick.png)
+   *All three in one frame for direct comparison; quadratic is lowest and most stable overall.*
+   * **Blue (deg=1 / linear)**: Exhibits a consistently highest average error (~40 gas). Although its error bars narrow as the training ratio increases, its systematic bias from underfitting persists.
+   * **Orange (deg=2 / quadratic)**: Achieves the lowest mean RMSE across almost all training ratios (from 0.10 to 0.90) and maintains tight error bars.
+   * **Green (deg=3 / cubic)**: Displays high variance (wide error bars) at low training ratios. As more data is used for training, its performance converges toward that of the quadratic model. However, its standard deviation remains consistently larger.
+
+### What this means for `baseGas(x)` in production
+
+* Our production model for **`baseGas(x)`** should default to a **quadratic polynomial** of calldata length `x`.
+* We pack the learned coefficients on-chain (router) to adjust fees so the relayer can be reimbursed from the consumer’s vault, enabling **low-balance continuous relaying**.
+* The candlesticks indicate the **expected variability** across random splits; quadratic’s smaller std suggests robust performance across traffic mixes.
+
+---
+
+## Appendix: EVM Cost Anatomy
+
+* **Intrinsic base**: `21000`.
+
+* **Calldata** (post-Istanbul): `16` gas per non-zero byte, `4` per zero byte.
+
+* **Memory expansion**:
+
+  See [Yellow Paper](https://ethereum.github.io/yellowpaper/paper.pdf)
+
+  ```
+  C_mem(a) = G_memory * a + floor(a^2 / 512)
+  DeltaC   = C_mem(a1) - C_mem(a0)
+  ```
+
+  where `a` is memory size in 32-byte words. The `a^2/512` term explains the mild quadratic growth.
+
+* **Cold vs warm** (EIP-2929): the first access to an account/storage slot in a tx is costlier; subsequent accesses are cheaper. This yields intercept shifts and small residuals, not a change to the fundamental shape.
 
 ---
 
 ## Summary
 
-* We **separate** total gas into `targetGasUsed` (consumer) and $f(x)$ (router + EVM).
-* We **learn $f(x)$** from real receipts as `gasUsed - targetGasUsed` vs **calldata length**.
-* **Quadratic** fits best in practice because it consistent with **memory expansion** and per-entry work while Linear underfits and Cubic tends to overfit.
-* The pipeline (Foundry + Monte-Carlo) gives a **repeatable** way to keep relayers solvent by paying the **entire transaction** from the consumer’s vault, with ongoing recalibration as code or network conditions evolve.
+* We estimate **TotalTxGasUsed** by **adding** the measured **consumer work** (`targetGasUsed`) to a learned **overhead model** `f(x)` that depends on **calldata length**.
+* **Quadratic** is typically the best model for `f(x)`, consistent with **memory expansion** and per-entry loops; Linear tends to underfit, Cubic tends to overfit.
+* The **Foundry harness** (snapshot/revert, memory reset) yields repeatable intra-repo measurements and supports on-chain **calibration** (e.g., `additionalGasUsed`).
+* The **Python Monte-Carlo** sweep quantifies model uncertainty across train ratios and prefers simpler models when statistically indistinguishable.
+* With this pipeline, a relayer can operate with *near-zero native balance*, being reimbursed **for the entire tx** from the consumer’s vault, and you can keep the model fresh as conditions evolve.
